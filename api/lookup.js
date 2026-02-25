@@ -82,8 +82,8 @@ try {
     details: String(err),
   });
 }
+const paintMatch = findPaintMatch(dvlaData?.make, dvlaData?.colour);
 
-// --- TEMP: keep your paint output for now (still demo) ---
 return res.json({
   ok: true,
   dvlaKeyPresent: !!process.env.DVLA_API_KEY, // safe: doesn't reveal the key
