@@ -24,23 +24,60 @@ module.exports = async (req, res) => {
 
     const reg = vrm.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
 
-    // TEMP TEST RESPONSE (so we know it works)
-    return res.json({
-      ok: true,
-      dvlaKeyPresent: !!process.env.DVLA_API_KEY,
-      vrm: reg,
-      vehicle: {
-        make: "Volvo",
-        model: "XC90",
-        year: 2019
-      },
-      paintCode: "717",
-      paintName: "Onyx Black",
-      swatch: "#0B0B0B",
-      recipe: "base:60;black:40"
-    });
+  // --- DVLA lookup ---
+const dvlaUrl = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
 
-  } catch (err) {
-    return res.status(500).json({ error: 'lookup failed' });
+let dvlaData;
+try {
+  const dvlaRes = await fetch(dvlaUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.DVLA_API_KEY,
+    },
+    body: JSON.stringify({ registrationNumber: reg }),
+  });
+
+  const text = await dvlaRes.text(); // read as text first, then JSON parse
+  dvlaData = text ? JSON.parse(text) : null;
+
+  if (!dvlaRes.ok) {
+    return res.status(dvlaRes.status).json({
+      ok: false,
+      error: "DVLA error",
+      status: dvlaRes.status,
+      details: dvlaData,
+    });
   }
-};
+} catch (err) {
+  return res.status(500).json({
+    ok: false,
+    error: "Failed to contact DVLA",
+    details: String(err),
+  });
+}
+
+// --- TEMP: keep your paint output for now (still demo) ---
+return res.json({
+  ok: true,
+  dvlaKeyPresent: !!process.env.DVLA_API_KEY, // safe: doesn't reveal the key
+  vrm: reg,
+
+  // Raw DVLA response (useful while we’re building)
+  dvla: dvlaData,
+
+  // Friendly vehicle object (we’ll refine this)
+  vehicle: {
+    make: dvlaData?.make || null,
+    model: dvlaData?.model || null,
+    colour: dvlaData?.colour || null,
+    year: dvlaData?.yearOfManufacture || null,
+    fuelType: dvlaData?.fuelType || null,
+  },
+
+  // Your current demo paint mapping (next we’ll replace this with real matching)
+  paintCode: "717",
+  paintName: "Onyx Black",
+  swatch: "#0B0B0B",
+  recipe: "base:60;black:40",
+});
