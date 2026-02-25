@@ -3,3 +3,7 @@ VAUXHALL,WHITE,VX-WH-001,Gloss White,#FFFFFF,base:90;white:10
 VAUXHALL,BLACK,VX-BK-001,Jet Black,#0B0B0B,base:60;black:40
 VOLVO,BLACK,717,Onyx Black,#0B0B0B,base:60;black:40
 VOLVO,BLUE,VX-BL-001,Ocean Blue,#0033AA,base:70;blue:30
+MINI,GREEN,MIN-GR-001,British Racing Green,#004225,base:70;green:30
+MINI,BLACK,MIN-BK-001,Midnight Black,#0B0B0B,base:60;black:40
+MINI,WHITE,MIN-WH-001,Pepper White,#FFFFFF,base:90;white:10
+MINI,BLUE,MIN-BL-001,Island Blue,#0033AA,base:70;blue:30
