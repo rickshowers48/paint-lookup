@@ -82,7 +82,10 @@ try {
     details: String(err),
   });
 }
-const paintMatch = findPaintMatch(dvlaData?.make, dvlaData?.colour);
+let paintMatch = findPaintMatch(dvlaData?.make, dvlaData?.colour);
+if (!paintMatch) {
+  paintMatch = findPaintMatch("", dvlaData?.colour); // generic colour fallback
+}
 
 return res.json({
   ok: true,
