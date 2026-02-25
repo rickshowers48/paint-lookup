@@ -1,4 +1,30 @@
 const fetch = require('node-fetch');
+const fs = require("fs");
+const path = require("path");
+
+function loadPaintCodes() {
+  const filePath = path.join(process.cwd(), "data", "paintcodes.csv");
+  const raw = fs.readFileSync(filePath, "utf8").trim();
+  const lines = raw.split("\n");
+  const headers = lines[0].split(",").map((h) => h.trim());
+
+  return lines.slice(1).map((line) => {
+    const cols = line.split(",").map((c) => c.trim());
+    const row = {};
+    headers.forEach((h, i) => (row[h] = cols[i] ?? ""));
+    return row;
+  });
+}
+
+function findPaintMatch(make, colour) {
+  const rows = loadPaintCodes();
+  const m = (make || "").toUpperCase();
+  const c = (colour || "").toUpperCase();
+
+  return rows.find(
+    (r) => (r.make || "").toUpperCase() === m && (r.colour || "").toUpperCase() === c
+  );
+}
 
 module.exports = async (req, res) => {
   try {
