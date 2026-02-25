@@ -81,3 +81,7 @@ return res.json({
   swatch: "#0B0B0B",
   recipe: "base:60;black:40",
 });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: "lookup failed", details: String(err) });
+  }
+};
