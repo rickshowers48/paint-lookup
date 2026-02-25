@@ -7,3 +7,9 @@ MINI,GREEN,MIN-GR-001,British Racing Green,#004225,base:70;green:30
 MINI,BLACK,MIN-BK-001,Midnight Black,#0B0B0B,base:60;black:40
 MINI,WHITE,MIN-WH-001,Pepper White,#FFFFFF,base:90;white:10
 MINI,BLUE,MIN-BL-001,Island Blue,#0033AA,base:70;blue:30
+,BLACK,GEN-BK-001,Gloss Black,#0B0B0B,base:60;black:40
+,WHITE,GEN-WH-001,Gloss White,#FFFFFF,base:90;white:10
+,BLUE,GEN-BL-001,Deep Blue,#0033AA,base:70;blue:30
+,GREEN,GEN-GR-001,Deep Green,#004225,base:70;green:30
+,SILVER,GEN-SI-001,Metallic Silver,#C0C0C0,base:80;silver:20
+,RED,GEN-RD-001,Chili Red,#CC0000,base:70;red:30
