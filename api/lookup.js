@@ -27,6 +27,7 @@ module.exports = async (req, res) => {
     // TEMP TEST RESPONSE (so we know it works)
     return res.json({
       ok: true,
+      dvlaKeyPresent: !!process.env.DVLA_API_KEY,
       vrm: reg,
       vehicle: {
         make: "Volvo",
