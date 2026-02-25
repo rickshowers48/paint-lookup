@@ -86,7 +86,7 @@ const paintMatch = findPaintMatch(dvlaData?.make, dvlaData?.colour);
 
 return res.json({
   ok: true,
-  dvlaKeyPresent: !!process.env.DVLA_API_KEY, // safe: doesn't reveal the key
+ 
   vrm: reg,
 
   // Raw DVLA response (useful while we’re building)
