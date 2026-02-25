@@ -1,0 +1,4 @@
+make,colour,paintCode,paintName,swatch,recipe
+VAUXHALL,WHITE,VX-WH-001,Gloss White,#FFFFFF,base:90;white:10
+VAUXHALL,BLACK,VX-BK-001,Jet Black,#0B0B0B,base:60;black:40
+VOLVO,BLACK,717,Onyx Black,#0B0B0B,base:60;black:40
