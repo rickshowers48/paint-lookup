@@ -102,10 +102,10 @@ return res.json({
   },
 
   // Your current demo paint mapping (next we’ll replace this with real matching)
-  paintCode: "717",
-  paintName: "Onyx Black",
-  swatch: "#0B0B0B",
-  recipe: "base:60;black:40",
+paintCode: paintMatch?.paintCode || null,
+paintName: paintMatch?.paintName || null,
+swatch: paintMatch?.swatch || null,
+recipe: paintMatch?.recipe || null,
 });
   } catch (err) {
     return res.status(500).json({ ok: false, error: "lookup failed", details: String(err) });
