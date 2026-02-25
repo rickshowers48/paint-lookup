@@ -64,7 +64,7 @@ return res.json({
   vrm: reg,
 
   // Raw DVLA response (useful while we’re building)
-  dvla: dvlaData,
+
 
   // Friendly vehicle object (we’ll refine this)
   vehicle: {
