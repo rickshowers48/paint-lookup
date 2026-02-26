@@ -5,7 +5,12 @@ const path = require("path");
 // ---------- Paint CSV helpers ----------
 function loadPaintCodes() {
   const filePath = path.join(process.cwd(), "data", "paintcodes.csv");
+
+  if (!fs.existsSync(filePath)) return [];
+
   const raw = fs.readFileSync(filePath, "utf8").trim();
+  if (!raw) return [];
+
   const lines = raw.split("\n");
   const headers = lines[0].split(",").map((h) => h.trim());
 
@@ -35,7 +40,7 @@ function pickSilhouetteKey(make, model, bodyType) {
   const md = (model || "").toUpperCase();
   const bt = (bodyType || "").toUpperCase();
 
-  // If DVLA gives bodyType (sometimes does), use it first
+  // DVLA bodyType first (if present)
   if (bt.includes("MOTORCYCLE")) return "motorcycle";
   if (bt.includes("PANEL VAN") || bt.includes("VAN")) return "van";
   if (bt.includes("PICKUP")) return "pickup";
@@ -46,7 +51,7 @@ function pickSilhouetteKey(make, model, bodyType) {
   if (bt.includes("SALOON") || bt.includes("SEDAN")) return "sedan";
   if (bt.includes("SUV") || bt.includes("4X4") || bt.includes("CROSSOVER")) return "suv";
 
-  // Model keyword rules (works even if model is partial)
+  // Model keyword rules
   if (md.includes("XC") || md.includes("SPORTAGE") || md.includes("QASHQAI")) return "suv";
   if (md.includes("RANGE") || md.includes("DISCOVERY")) return "suv";
   if (md.includes("TRANSIT") || md.includes("SPRINTER") || md.includes("VITO")) return "van";
@@ -55,9 +60,9 @@ function pickSilhouetteKey(make, model, bodyType) {
   if (md.includes("COUPE")) return "coupe";
   if (md.includes("PICKUP") || md.includes("RANGER") || md.includes("HILUX")) return "pickup";
 
-  // Make-based defaults (when model is null)
+  // Make-based fallbacks
   if (mk === "MINI") return "hatch";
-  if (mk === "VOLVO") return "suv";      // safe-ish for now
+  if (mk === "VOLVO") return "suv";
   if (mk === "FORD") return "hatch";
   if (mk === "VAUXHALL") return "hatch";
 
@@ -66,23 +71,29 @@ function pickSilhouetteKey(make, model, bodyType) {
 
 module.exports = async (req, res) => {
   try {
-    // CORS
+    // ---------- CORS ----------
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
     if (req.method === "OPTIONS") return res.status(200).end();
-    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "POST only" });
+    if (req.method !== "POST") {
+      return res.status(405).json({ ok: false, error: "POST only" });
+    }
 
     const { vrm } = req.body || {};
-    if (!vrm) return res.status(400).json({ ok: false, error: "Missing VRM" });
+    if (!vrm) {
+      return res.status(400).json({ ok: false, error: "Missing VRM" });
+    }
 
     const reg = String(vrm).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 
-    // DVLA lookup
-    const dvlaUrl = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
+    // ---------- DVLA lookup ----------
+    const dvlaUrl =
+      "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
 
     let dvlaData = null;
+
     try {
       const dvlaRes = await fetch(dvlaUrl, {
         method: "POST",
@@ -115,18 +126,28 @@ module.exports = async (req, res) => {
     const colour = dvlaData?.colour || null;
     const year = dvlaData?.yearOfManufacture || null;
     const fuelType = dvlaData?.fuelType || null;
-    const bodyType = dvlaData?.bodyType || null; // may be null
+    const bodyType = dvlaData?.bodyType || null;
 
-    // paint match: exact make+colour then fallback to generic colour
+    // ---------- Paint matching ----------
     let paintMatch = findPaintMatch(make, colour);
-    if (!paintMatch) paintMatch = findPaintMatch("", colour);
+    if (!paintMatch) {
+      paintMatch = findPaintMatch("", colour); // generic fallback
+    }
 
+    // ---------- Silhouette ----------
     const silhouetteKey = pickSilhouetteKey(make, model, bodyType);
 
+    // ---------- Final Response ----------
     return res.json({
       ok: true,
       vrm: reg,
-      vehicle: { make, model, colour, year, fuelType },
+      vehicle: {
+        make,
+        model,
+        colour,
+        year,
+        fuelType,
+      },
       silhouetteKey,
       paintCode: paintMatch?.paintCode || null,
       paintName: paintMatch?.paintName || null,
@@ -134,6 +155,9 @@ module.exports = async (req, res) => {
       recipe: paintMatch?.recipe || null,
     });
   } catch (err) {
-    return res.status(500).json({ ok: false, error: "lookup failed" });
+    return res.status(500).json({
+      ok: false,
+      error: "lookup failed",
+    });
   }
 };
