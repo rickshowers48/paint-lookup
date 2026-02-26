@@ -2,15 +2,13 @@ const fetch = require("node-fetch");
 const fs = require("fs");
 const path = require("path");
 
-// ---------- Paint CSV helpers ----------
+/* =========================
+   Paint CSV helpers
+========================= */
+
 function loadPaintCodes() {
   const filePath = path.join(process.cwd(), "data", "paintcodes.csv");
-
-  if (!fs.existsSync(filePath)) return [];
-
   const raw = fs.readFileSync(filePath, "utf8").trim();
-  if (!raw) return [];
-
   const lines = raw.split("\n");
   const headers = lines[0].split(",").map((h) => h.trim());
 
@@ -34,13 +32,37 @@ function findPaintMatch(make, colour) {
   );
 }
 
-// ---------- Silhouette helper ----------
+/* =========================
+   Silhouette logic (FIXED)
+========================= */
+
 function pickSilhouetteKey(make, model, bodyType) {
   const mk = (make || "").toUpperCase();
   const md = (model || "").toUpperCase();
   const bt = (bodyType || "").toUpperCase();
 
-  // DVLA bodyType first (if present)
+  // 1️⃣ Model keywords FIRST (most reliable)
+  if (md.includes("XC") || md.includes("XC90") || md.includes("XC60") || md.includes("XC40")) return "suv";
+  if (md.includes("QASHQAI") || md.includes("SPORTAGE") || md.includes("KUGA") || md.includes("TIGUAN")) return "suv";
+  if (md.includes("RANGE") || md.includes("DISCOVERY") || md.includes("EVOQUE")) return "suv";
+
+  if (md.includes("TRANSIT") || md.includes("SPRINTER") || md.includes("VITO") || md.includes("CRAFTER")) return "van";
+  if (md.includes("HILUX") || md.includes("RANGER") || md.includes("NAVARA")) return "pickup";
+
+  if (md.includes("ESTATE") || md.includes("TOURER") || md.includes("WAGON")) return "estate";
+  if (md.includes("CABRIO") || md.includes("CONVERT")) return "convertible";
+  if (md.includes("COUPE")) return "coupe";
+  if (md.includes("HATCH")) return "hatch";
+
+  // 2️⃣ Make defaults (safe fallbacks)
+  if (mk === "VOLVO") return "suv";
+  if (mk === "LAND ROVER") return "suv";
+  if (mk === "JEEP") return "suv";
+  if (mk === "MINI") return "hatch";
+  if (mk === "FORD") return "hatch";
+  if (mk === "VAUXHALL") return "hatch";
+
+  // 3️⃣ DVLA bodyType LAST (least reliable)
   if (bt.includes("MOTORCYCLE")) return "motorcycle";
   if (bt.includes("PANEL VAN") || bt.includes("VAN")) return "van";
   if (bt.includes("PICKUP")) return "pickup";
@@ -51,27 +73,16 @@ function pickSilhouetteKey(make, model, bodyType) {
   if (bt.includes("SALOON") || bt.includes("SEDAN")) return "sedan";
   if (bt.includes("SUV") || bt.includes("4X4") || bt.includes("CROSSOVER")) return "suv";
 
-  // Model keyword rules
-  if (md.includes("XC") || md.includes("SPORTAGE") || md.includes("QASHQAI")) return "suv";
-  if (md.includes("RANGE") || md.includes("DISCOVERY")) return "suv";
-  if (md.includes("TRANSIT") || md.includes("SPRINTER") || md.includes("VITO")) return "van";
-  if (md.includes("ESTATE") || md.includes("TOURER") || md.includes("WAGON")) return "estate";
-  if (md.includes("CABRIO") || md.includes("CONVERT")) return "convertible";
-  if (md.includes("COUPE")) return "coupe";
-  if (md.includes("PICKUP") || md.includes("RANGER") || md.includes("HILUX")) return "pickup";
-
-  // Make-based fallbacks
-  if (mk === "MINI") return "hatch";
-  if (mk === "VOLVO") return "suv";
-  if (mk === "FORD") return "hatch";
-  if (mk === "VAUXHALL") return "hatch";
-
   return "generic";
 }
 
+/* =========================
+   API Handler
+========================= */
+
 module.exports = async (req, res) => {
   try {
-    // ---------- CORS ----------
+    // CORS
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -88,7 +99,7 @@ module.exports = async (req, res) => {
 
     const reg = String(vrm).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 
-    // ---------- DVLA lookup ----------
+    // DVLA lookup
     const dvlaUrl =
       "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
 
@@ -111,7 +122,6 @@ module.exports = async (req, res) => {
         return res.status(dvlaRes.status).json({
           ok: false,
           error: "DVLA error",
-          status: dvlaRes.status,
         });
       }
     } catch (err) {
@@ -128,26 +138,16 @@ module.exports = async (req, res) => {
     const fuelType = dvlaData?.fuelType || null;
     const bodyType = dvlaData?.bodyType || null;
 
-    // ---------- Paint matching ----------
+    // Paint match
     let paintMatch = findPaintMatch(make, colour);
-    if (!paintMatch) {
-      paintMatch = findPaintMatch("", colour); // generic fallback
-    }
+    if (!paintMatch) paintMatch = findPaintMatch("", colour);
 
-    // ---------- Silhouette ----------
     const silhouetteKey = pickSilhouetteKey(make, model, bodyType);
 
-    // ---------- Final Response ----------
     return res.json({
       ok: true,
       vrm: reg,
-      vehicle: {
-        make,
-        model,
-        colour,
-        year,
-        fuelType,
-      },
+      vehicle: { make, model, colour, year, fuelType },
       silhouetteKey,
       paintCode: paintMatch?.paintCode || null,
       paintName: paintMatch?.paintName || null,
