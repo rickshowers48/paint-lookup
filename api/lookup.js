@@ -1,7 +1,8 @@
-const fetch = require('node-fetch');
+const fetch = require("node-fetch");
 const fs = require("fs");
 const path = require("path");
 
+// ---------- Paint CSV helpers ----------
 function loadPaintCodes() {
   const filePath = path.join(process.cwd(), "data", "paintcodes.csv");
   const raw = fs.readFileSync(filePath, "utf8").trim();
@@ -28,35 +29,60 @@ function findPaintMatch(make, colour) {
   );
 }
 
+// ---------- Silhouette helper ----------
+function pickSilhouetteKey(make, model, bodyType) {
+  const mk = (make || "").toUpperCase();
+  const md = (model || "").toUpperCase();
+  const bt = (bodyType || "").toUpperCase();
+
+  // If DVLA gives bodyType (sometimes does), use it first
+  if (bt.includes("MOTORCYCLE")) return "motorcycle";
+  if (bt.includes("PANEL VAN") || bt.includes("VAN")) return "van";
+  if (bt.includes("PICKUP")) return "pickup";
+  if (bt.includes("ESTATE")) return "estate";
+  if (bt.includes("COUPE")) return "coupe";
+  if (bt.includes("CONVERTIBLE")) return "convertible";
+  if (bt.includes("HATCHBACK")) return "hatch";
+  if (bt.includes("SALOON") || bt.includes("SEDAN")) return "sedan";
+  if (bt.includes("SUV") || bt.includes("4X4") || bt.includes("CROSSOVER")) return "suv";
+
+  // Model keyword rules (works even if model is partial)
+  if (md.includes("XC") || md.includes("SPORTAGE") || md.includes("QASHQAI")) return "suv";
+  if (md.includes("RANGE") || md.includes("DISCOVERY")) return "suv";
+  if (md.includes("TRANSIT") || md.includes("SPRINTER") || md.includes("VITO")) return "van";
+  if (md.includes("ESTATE") || md.includes("TOURER") || md.includes("WAGON")) return "estate";
+  if (md.includes("CABRIO") || md.includes("CONVERT")) return "convertible";
+  if (md.includes("COUPE")) return "coupe";
+  if (md.includes("PICKUP") || md.includes("RANGER") || md.includes("HILUX")) return "pickup";
+
+  // Make-based defaults (when model is null)
+  if (mk === "MINI") return "hatch";
+  if (mk === "VOLVO") return "suv";      // safe-ish for now
+  if (mk === "FORD") return "hatch";
+  if (mk === "VAUXHALL") return "hatch";
+
+  return "generic";
+}
+
 module.exports = async (req, res) => {
   try {
     // CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-    if (req.method === 'OPTIONS') {
-      return res.status(200).end();
-    }
+    if (req.method === "OPTIONS") return res.status(200).end();
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "POST only" });
 
-    if (req.method !== 'POST') {
-      return res.status(405).json({ error: 'POST only' });
-    }
+    const { vrm } = req.body || {};
+    if (!vrm) return res.status(400).json({ ok: false, error: "Missing VRM" });
 
-    const { vrm } = req.body;
-
-    if (!vrm) {
-      return res.status(400).json({ error: 'Missing VRM' });
-    }
-
-    const reg = vrm.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    const reg = String(vrm).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 
     // DVLA lookup
-    const dvlaUrl =
-      "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
+    const dvlaUrl = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
 
-    let dvlaData;
-
+    let dvlaData = null;
     try {
       const dvlaRes = await fetch(dvlaUrl, {
         method: "POST",
@@ -84,41 +110,30 @@ module.exports = async (req, res) => {
       });
     }
 
-    // Paint match
-    let paintMatch = findPaintMatch(dvlaData?.make, dvlaData?.colour);
+    const make = dvlaData?.make || null;
+    const model = dvlaData?.model || null;
+    const colour = dvlaData?.colour || null;
+    const year = dvlaData?.yearOfManufacture || null;
+    const fuelType = dvlaData?.fuelType || null;
+    const bodyType = dvlaData?.bodyType || null; // may be null
 
-    if (!paintMatch) {
-      paintMatch = findPaintMatch("", dvlaData?.colour); // generic fallback
-    }
+    // paint match: exact make+colour then fallback to generic colour
+    let paintMatch = findPaintMatch(make, colour);
+    if (!paintMatch) paintMatch = findPaintMatch("", colour);
+
+    const silhouetteKey = pickSilhouetteKey(make, model, bodyType);
 
     return res.json({
       ok: true,
       vrm: reg,
-
-      vehicle: {
-        make: dvlaData?.make || null,
-        model: dvlaData?.model || null,
-        colour: dvlaData?.colour || null,
-        year: dvlaData?.yearOfManufacture || null,
-        fuelType: dvlaData?.fuelType || null,
-      },
-
-      // silhouette selector for frontend
-      carKey:
-        (dvlaData?.make || "").toUpperCase() === "VOLVO"
-          ? "XC90"
-          : (dvlaData?.make || "").toUpperCase() === "MINI"
-          ? "MINI_HATCH"
-          : "GENERIC",
-
+      vehicle: { make, model, colour, year, fuelType },
+      silhouetteKey,
       paintCode: paintMatch?.paintCode || null,
       paintName: paintMatch?.paintName || null,
       swatch: paintMatch?.swatch || null,
       recipe: paintMatch?.recipe || null,
     });
   } catch (err) {
-    return res
-      .status(500)
-      .json({ ok: false, error: "lookup failed" });
+    return res.status(500).json({ ok: false, error: "lookup failed" });
   }
 };
