@@ -22,18 +22,19 @@ function findPaintMatch(make, colour) {
   const c = (colour || "").toUpperCase();
 
   return rows.find(
-    (r) => (r.make || "").toUpperCase() === m && (r.colour || "").toUpperCase() === c
+    (r) =>
+      (r.make || "").toUpperCase() === m &&
+      (r.colour || "").toUpperCase() === c
   );
 }
 
 module.exports = async (req, res) => {
   try {
-    // ✅ CORS headers (lets Wix/Hoppscotch call your API)
+    // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    // ✅ Handle preflight request
     if (req.method === 'OPTIONS') {
       return res.status(200).end();
     }
@@ -50,67 +51,74 @@ module.exports = async (req, res) => {
 
     const reg = vrm.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
 
-  // --- DVLA lookup ---
-const dvlaUrl = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
+    // DVLA lookup
+    const dvlaUrl =
+      "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
 
-let dvlaData;
-try {
-  const dvlaRes = await fetch(dvlaUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.DVLA_API_KEY,
-    },
-    body: JSON.stringify({ registrationNumber: reg }),
-  });
+    let dvlaData;
 
-  const text = await dvlaRes.text(); // read as text first, then JSON parse
-  dvlaData = text ? JSON.parse(text) : null;
+    try {
+      const dvlaRes = await fetch(dvlaUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": process.env.DVLA_API_KEY,
+        },
+        body: JSON.stringify({ registrationNumber: reg }),
+      });
 
-  if (!dvlaRes.ok) {
-    return res.status(dvlaRes.status).json({
-      ok: false,
-      error: "DVLA error",
-      status: dvlaRes.status,
-      details: dvlaData,
+      const text = await dvlaRes.text();
+      dvlaData = text ? JSON.parse(text) : null;
+
+      if (!dvlaRes.ok) {
+        return res.status(dvlaRes.status).json({
+          ok: false,
+          error: "DVLA error",
+          status: dvlaRes.status,
+        });
+      }
+    } catch (err) {
+      return res.status(500).json({
+        ok: false,
+        error: "Failed to contact DVLA",
+      });
+    }
+
+    // Paint match
+    let paintMatch = findPaintMatch(dvlaData?.make, dvlaData?.colour);
+
+    if (!paintMatch) {
+      paintMatch = findPaintMatch("", dvlaData?.colour); // generic fallback
+    }
+
+    return res.json({
+      ok: true,
+      vrm: reg,
+
+      vehicle: {
+        make: dvlaData?.make || null,
+        model: dvlaData?.model || null,
+        colour: dvlaData?.colour || null,
+        year: dvlaData?.yearOfManufacture || null,
+        fuelType: dvlaData?.fuelType || null,
+      },
+
+      // silhouette selector for frontend
+      carKey:
+        (dvlaData?.make || "").toUpperCase() === "VOLVO"
+          ? "XC90"
+          : (dvlaData?.make || "").toUpperCase() === "MINI"
+          ? "MINI_HATCH"
+          : "GENERIC",
+
+      paintCode: paintMatch?.paintCode || null,
+      paintName: paintMatch?.paintName || null,
+      swatch: paintMatch?.swatch || null,
+      recipe: paintMatch?.recipe || null,
     });
-  }
-} catch (err) {
-  return res.status(500).json({
-    ok: false,
-    error: "Failed to contact DVLA",
-    details: String(err),
-  });
-}
-let paintMatch = findPaintMatch(dvlaData?.make, dvlaData?.colour);
-if (!paintMatch) {
-  paintMatch = findPaintMatch("", dvlaData?.colour); // generic colour fallback
-}
-
-return res.json({
-  ok: true,
- 
-  vrm: reg,
-
-  // Raw DVLA response (useful while we’re building)
-
-
-  // Friendly vehicle object (we’ll refine this)
-  vehicle: {
-    make: dvlaData?.make || null,
-    model: dvlaData?.model || null,
-    colour: dvlaData?.colour || null,
-    year: dvlaData?.yearOfManufacture || null,
-    fuelType: dvlaData?.fuelType || null,
-  },
-
-  // Your current demo paint mapping (next we’ll replace this with real matching)
-paintCode: paintMatch?.paintCode || null,
-paintName: paintMatch?.paintName || null,
-swatch: paintMatch?.swatch || null,
-recipe: paintMatch?.recipe || null,
-});
   } catch (err) {
-    return res.status(500).json({ ok: false, error: "lookup failed", details: String(err) });
+    return res
+      .status(500)
+      .json({ ok: false, error: "lookup failed" });
   }
 };
