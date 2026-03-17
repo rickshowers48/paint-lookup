@@ -33,7 +33,7 @@ function findPaintMatch(make, colour) {
 }
 
 /* =========================
-   Silhouette logic (FIXED)
+   Silhouette logic
 ========================= */
 
 function pickSilhouetteKey(make, model, bodyType) {
@@ -41,20 +41,41 @@ function pickSilhouetteKey(make, model, bodyType) {
   const md = (model || "").toUpperCase();
   const bt = (bodyType || "").toUpperCase();
 
-  // 1️⃣ Model keywords FIRST (most reliable)
-  if (md.includes("XC") || md.includes("XC90") || md.includes("XC60") || md.includes("XC40")) return "suv";
-  if (md.includes("QASHQAI") || md.includes("SPORTAGE") || md.includes("KUGA") || md.includes("TIGUAN")) return "suv";
-  if (md.includes("RANGE") || md.includes("DISCOVERY") || md.includes("EVOQUE")) return "suv";
+  if (
+    md.includes("XC") ||
+    md.includes("XC90") ||
+    md.includes("XC60") ||
+    md.includes("XC40")
+  ) return "suv";
+  if (
+    md.includes("QASHQAI") ||
+    md.includes("SPORTAGE") ||
+    md.includes("KUGA") ||
+    md.includes("TIGUAN")
+  ) return "suv";
+  if (
+    md.includes("RANGE") ||
+    md.includes("DISCOVERY") ||
+    md.includes("EVOQUE")
+  ) return "suv";
 
-  if (md.includes("TRANSIT") || md.includes("SPRINTER") || md.includes("VITO") || md.includes("CRAFTER")) return "van";
-  if (md.includes("HILUX") || md.includes("RANGER") || md.includes("NAVARA")) return "pickup";
+  if (
+    md.includes("TRANSIT") ||
+    md.includes("SPRINTER") ||
+    md.includes("VITO") ||
+    md.includes("CRAFTER")
+  ) return "van";
+  if (
+    md.includes("HILUX") ||
+    md.includes("RANGER") ||
+    md.includes("NAVARA")
+  ) return "pickup";
 
   if (md.includes("ESTATE") || md.includes("TOURER") || md.includes("WAGON")) return "estate";
   if (md.includes("CABRIO") || md.includes("CONVERT")) return "convertible";
   if (md.includes("COUPE")) return "coupe";
   if (md.includes("HATCH")) return "hatch";
 
-  // 2️⃣ Make defaults (safe fallbacks)
   if (mk === "VOLVO") return "suv";
   if (mk === "LAND ROVER") return "suv";
   if (mk === "JEEP") return "suv";
@@ -62,7 +83,6 @@ function pickSilhouetteKey(make, model, bodyType) {
   if (mk === "FORD") return "hatch";
   if (mk === "VAUXHALL") return "hatch";
 
-  // 3️⃣ DVLA bodyType LAST (least reliable)
   if (bt.includes("MOTORCYCLE")) return "motorcycle";
   if (bt.includes("PANEL VAN") || bt.includes("VAN")) return "van";
   if (bt.includes("PICKUP")) return "pickup";
@@ -74,6 +94,16 @@ function pickSilhouetteKey(make, model, bodyType) {
   if (bt.includes("SUV") || bt.includes("4X4") || bt.includes("CROSSOVER")) return "suv";
 
   return "generic";
+}
+
+/* =========================
+   Helper: work out this site's base URL
+========================= */
+
+function getBaseUrl(req) {
+  const host = req.headers.host;
+  const proto = req.headers["x-forwarded-proto"] || "https";
+  return `${proto}://${host}`;
 }
 
 /* =========================
@@ -92,12 +122,14 @@ module.exports = async (req, res) => {
       return res.status(405).json({ ok: false, error: "POST only" });
     }
 
-    const { vrm } = req.body || {};
+    const { vrm, batchSize } = req.body || {};
+
     if (!vrm) {
       return res.status(400).json({ ok: false, error: "Missing VRM" });
     }
 
     const reg = String(vrm).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    const finalBatchSize = Number(batchSize) || 15;
 
     // DVLA lookup
     const dvlaUrl =
@@ -144,15 +176,56 @@ module.exports = async (req, res) => {
 
     const silhouetteKey = pickSilhouetteKey(make, model, bodyType);
 
+    // Formula lookup
+    let formula = null;
+    let formulaError = null;
+
+    if (paintMatch?.paintCode) {
+      try {
+        const baseUrl = getBaseUrl(req);
+
+        const formulaRes = await fetch(`${baseUrl}/api/formula`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            paintCode: paintMatch.paintCode,
+            batchSize: finalBatchSize,
+          }),
+        });
+
+        const formulaData = await formulaRes.json();
+
+        if (formulaData.ok) {
+          formula = formulaData;
+        } else {
+          formulaError = formulaData.error || "Formula lookup failed";
+        }
+      } catch (err) {
+        formulaError = "Formula lookup failed";
+      }
+    }
+
     return res.json({
       ok: true,
       vrm: reg,
-      vehicle: { make, model, colour, year, fuelType },
+      vehicle: {
+        make,
+        model,
+        colour,
+        year,
+        fuelType,
+        bodyType,
+      },
       silhouetteKey,
       paintCode: paintMatch?.paintCode || null,
       paintName: paintMatch?.paintName || null,
       swatch: paintMatch?.swatch || null,
       recipe: paintMatch?.recipe || null,
+      batchSize: finalBatchSize,
+      formula,
+      formulaError,
     });
   } catch (err) {
     return res.status(500).json({
