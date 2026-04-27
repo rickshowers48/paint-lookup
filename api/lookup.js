@@ -1,36 +1,4 @@
 const fetch = require("node-fetch");
-const fs = require("fs");
-const path = require("path");
-
-/* =========================
-   Paint CSV helpers
-========================= */
-
-function loadPaintCodes() {
-  const filePath = path.join(process.cwd(), "data", "paintcodes.csv");
-  const raw = fs.readFileSync(filePath, "utf8").trim();
-  const lines = raw.split("\n");
-  const headers = lines[0].split(",").map((h) => h.trim());
-
-  return lines.slice(1).map((line) => {
-    const cols = line.split(",").map((c) => c.trim());
-    const row = {};
-    headers.forEach((h, i) => (row[h] = cols[i] ?? ""));
-    return row;
-  });
-}
-
-function findPaintMatch(make, colour) {
-  const rows = loadPaintCodes();
-  const m = (make || "").toUpperCase();
-  const c = (colour || "").toUpperCase();
-
-  return rows.find(
-    (r) =>
-      (r.make || "").toUpperCase() === m &&
-      (r.colour || "").toUpperCase() === c
-  );
-}
 
 /* =========================
    Silhouette logic
@@ -65,14 +33,39 @@ function pickSilhouetteKey(make, model, bodyType) {
   return "generic";
 }
 
-/* =========================
-   Helper
-========================= */
+function clean(value = "") {
+  return String(value).trim();
+}
 
-function getBaseUrl(req) {
-  const host = req.headers.host;
-  const proto = req.headers["x-forwarded-proto"] || "https";
-  return `${proto}://${host}`;
+function normaliseMipaCode(code = "") {
+  const raw = clean(code).toUpperCase();
+
+  return raw
+    .replace(/\s+/g, "")
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function getFirstPaintFromVehicleData(vehicleData) {
+  const paintList =
+    vehicleData?.PaintCodeDetails?.PaintCodeList ||
+    vehicleData?.paintCodeDetails?.paintCodeList ||
+    vehicleData?.PaintCodeList ||
+    vehicleData?.paintCodeList ||
+    [];
+
+  if (Array.isArray(paintList) && paintList.length > 0) {
+    const first = paintList[0];
+
+    return {
+      code: clean(first.Code || first.code || ""),
+      description: clean(first.Description || first.description || "")
+    };
+  }
+
+  return {
+    code: "",
+    description: ""
+  };
 }
 
 /* =========================
@@ -86,12 +79,16 @@ module.exports = async (req, res) => {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
     if (req.method === "OPTIONS") return res.status(200).end();
+
     if (req.method !== "POST") {
       return res.status(405).json({ ok: false, error: "POST only" });
     }
 
     const { vrm, batchSize } = req.body || {};
-    if (!vrm) return res.status(400).json({ ok: false, error: "Missing VRM" });
+
+    if (!vrm) {
+      return res.status(400).json({ ok: false, error: "Missing VRM" });
+    }
 
     const reg = String(vrm).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
     const finalBatchSize = Number(batchSize) || 15;
@@ -106,85 +103,104 @@ module.exports = async (req, res) => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": process.env.DVLA_API_KEY,
+          "x-api-key": process.env.DVLA_API_KEY
         },
-        body: JSON.stringify({ registrationNumber: reg }),
+        body: JSON.stringify({ registrationNumber: reg })
       }
     );
 
-    const dvlaData = await dvlaRes.json();
+    const dvlaText = await dvlaRes.text();
+    const dvlaData = dvlaText ? JSON.parse(dvlaText) : {};
 
     if (!dvlaRes.ok) {
       return res.status(dvlaRes.status).json({
         ok: false,
-        error: "DVLA error",
+        error: "DVLA error"
       });
     }
 
-    const make = dvlaData?.make || null;
-    const model = dvlaData?.model || null;
-    const colour = dvlaData?.colour || null;
-    const year = dvlaData?.yearOfManufacture || null;
-    const fuelType = dvlaData?.fuelType || null;
-    const bodyType = dvlaData?.bodyType || null;
+    let make = dvlaData?.make || null;
+    let model = dvlaData?.model || null;
+    let colour = dvlaData?.colour || null;
+    let year = dvlaData?.yearOfManufacture || null;
+    let fuelType = dvlaData?.fuelType || null;
+    let bodyType = dvlaData?.bodyType || null;
 
     /* =========================
-       NEW: Paint Code API
+       Vehicle Data Global paint lookup
     ========================= */
 
-    let finalPaintCode = null;
-    let finalPaintName = null;
-    let paintMatch = null;
+    let rawPaintCode = null;
+    let paintCode = null;
+    let mipaSearchCode = null;
+    let paintName = null;
+    let vehicleDataError = null;
+    let vehicleDataStatus = null;
 
     try {
       const vehicleRes = await fetch(
-        `https://api.vehicledata.co.uk/vehicle?vrm=${reg}`,
+        `https://api.vehicledata.co.uk/vehicle?vrm=${encodeURIComponent(reg)}`,
         {
+          method: "GET",
           headers: {
-            "x-api-key": process.env.VEHICLE_DATA_API_KEY,
-          },
+            "x-api-key": process.env.VEHICLE_DATA_API_KEY
+          }
         }
       );
 
-      const vehicleData = await vehicleRes.json();
+      vehicleDataStatus = vehicleRes.status;
 
-      finalPaintCode = vehicleData?.colour?.code || null;
-      finalPaintName = vehicleData?.colour?.description || null;
+      const vehicleText = await vehicleRes.text();
+      const vehicleData = vehicleText ? JSON.parse(vehicleText) : {};
 
+      if (!vehicleRes.ok) {
+        vehicleDataError =
+          vehicleData?.error ||
+          vehicleData?.Error ||
+          vehicleData?.StatusMessage ||
+          "Vehicle Data API error";
+      } else {
+        const apiPaint = getFirstPaintFromVehicleData(vehicleData);
+
+        rawPaintCode = apiPaint.code || null;
+        paintCode = apiPaint.code || null;
+        mipaSearchCode = normaliseMipaCode(apiPaint.code || "");
+        paintName = apiPaint.description || null;
+
+        // Prefer richer VDG data if present
+        const details = vehicleData?.PaintCodeDetails || vehicleData?.paintCodeDetails || {};
+        make = details.Make || details.make || make;
+        model = details.Model || details.model || model;
+        fuelType = details.FuelType || details.fuelType || fuelType;
+        colour = details.CurrentColour || details.currentColour || colour;
+      }
     } catch (err) {
-      // silent fallback
-    }
-
-    /* =========================
-       FALLBACK to CSV
-    ========================= */
-
-    if (!finalPaintCode) {
-      paintMatch = findPaintMatch(make, colour) || findPaintMatch("", colour);
-      finalPaintCode = paintMatch?.paintCode || null;
-      finalPaintName = paintMatch?.paintName || null;
+      vehicleDataError = "Failed to contact Vehicle Data API";
     }
 
     const silhouetteKey = pickSilhouetteKey(make, model, bodyType);
 
     /* =========================
        Formula lookup
+       Only use REAL API paint codes.
     ========================= */
 
     let formula = null;
     let formulaError = null;
 
-    if (finalPaintCode) {
+    if (mipaSearchCode) {
       try {
-        const baseUrl = getBaseUrl(req);
+        const host = req.headers.host;
+        const proto = req.headers["x-forwarded-proto"] || "https";
+        const baseUrl = `${proto}://${host}`;
 
         const formulaRes = await fetch(`${baseUrl}/api/formula`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            paintCode: finalPaintCode,
-            batchSize: finalBatchSize,
-          }),
+            paintCode: mipaSearchCode,
+            batchSize: finalBatchSize
+          })
         });
 
         const formulaData = await formulaRes.json();
@@ -202,21 +218,37 @@ module.exports = async (req, res) => {
     return res.json({
       ok: true,
       vrm: reg,
-      vehicle: { make, model, colour, year, fuelType, bodyType },
+
+      vehicle: {
+        make,
+        model,
+        colour,
+        year,
+        fuelType,
+        bodyType
+      },
+
       silhouetteKey,
-      paintCode: finalPaintCode,
-      paintName: finalPaintName,
-      swatch: paintMatch?.swatch || null,
-      recipe: paintMatch?.recipe || null,
+
+      // The real useful stuff
+      rawPaintCode,
+      paintCode,
+      mipaSearchCode,
+      paintName,
+
       batchSize: finalBatchSize,
       formula,
       formulaError,
-    });
 
+      // Debug info while testing
+      source: paintCode ? "vehicle-data-global" : "no-paint-code-found",
+      vehicleDataStatus,
+      vehicleDataError
+    });
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      error: "lookup failed",
+      error: "lookup failed"
     });
   }
 };
