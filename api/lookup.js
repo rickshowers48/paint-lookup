@@ -41,47 +41,16 @@ function pickSilhouetteKey(make, model, bodyType) {
   const md = (model || "").toUpperCase();
   const bt = (bodyType || "").toUpperCase();
 
-  if (
-    md.includes("XC") ||
-    md.includes("XC90") ||
-    md.includes("XC60") ||
-    md.includes("XC40")
-  ) return "suv";
-  if (
-    md.includes("QASHQAI") ||
-    md.includes("SPORTAGE") ||
-    md.includes("KUGA") ||
-    md.includes("TIGUAN")
-  ) return "suv";
-  if (
-    md.includes("RANGE") ||
-    md.includes("DISCOVERY") ||
-    md.includes("EVOQUE")
-  ) return "suv";
-
-  if (
-    md.includes("TRANSIT") ||
-    md.includes("SPRINTER") ||
-    md.includes("VITO") ||
-    md.includes("CRAFTER")
-  ) return "van";
-  if (
-    md.includes("HILUX") ||
-    md.includes("RANGER") ||
-    md.includes("NAVARA")
-  ) return "pickup";
-
+  if (md.includes("XC") || md.includes("QASHQAI") || md.includes("SPORTAGE") || md.includes("KUGA") || md.includes("TIGUAN") || md.includes("RANGE") || md.includes("DISCOVERY") || md.includes("EVOQUE")) return "suv";
+  if (md.includes("TRANSIT") || md.includes("SPRINTER") || md.includes("VITO") || md.includes("CRAFTER")) return "van";
+  if (md.includes("HILUX") || md.includes("RANGER") || md.includes("NAVARA")) return "pickup";
   if (md.includes("ESTATE") || md.includes("TOURER") || md.includes("WAGON")) return "estate";
   if (md.includes("CABRIO") || md.includes("CONVERT")) return "convertible";
   if (md.includes("COUPE")) return "coupe";
   if (md.includes("HATCH")) return "hatch";
 
-  if (mk === "VOLVO") return "suv";
-  if (mk === "LAND ROVER") return "suv";
-  if (mk === "JEEP") return "suv";
-  if (mk === "MINI") return "hatch";
-  if (mk === "FORD") return "hatch";
-  if (mk === "VAUXHALL") return "hatch";
+  if (mk === "VOLVO" || mk === "LAND ROVER" || mk === "JEEP") return "suv";
+  if (mk === "MINI" || mk === "FORD" || mk === "VAUXHALL") return "hatch";
 
   if (bt.includes("MOTORCYCLE")) return "motorcycle";
   if (bt.includes("PANEL VAN") || bt.includes("VAN")) return "van";
@@ -97,7 +66,7 @@ function pickSilhouetteKey(make, model, bodyType) {
 }
 
 /* =========================
-   Helper: work out this site's base URL
+   Helper
 ========================= */
 
 function getBaseUrl(req) {
@@ -112,7 +81,6 @@ function getBaseUrl(req) {
 
 module.exports = async (req, res) => {
   try {
-    // CORS
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -123,43 +91,33 @@ module.exports = async (req, res) => {
     }
 
     const { vrm, batchSize } = req.body || {};
-
-    if (!vrm) {
-      return res.status(400).json({ ok: false, error: "Missing VRM" });
-    }
+    if (!vrm) return res.status(400).json({ ok: false, error: "Missing VRM" });
 
     const reg = String(vrm).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
     const finalBatchSize = Number(batchSize) || 15;
 
-    // DVLA lookup
-    const dvlaUrl =
-      "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
+    /* =========================
+       DVLA lookup
+    ========================= */
 
-    let dvlaData = null;
-
-    try {
-      const dvlaRes = await fetch(dvlaUrl, {
+    const dvlaRes = await fetch(
+      "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles",
+      {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-api-key": process.env.DVLA_API_KEY,
         },
         body: JSON.stringify({ registrationNumber: reg }),
-      });
-
-      const text = await dvlaRes.text();
-      dvlaData = text ? JSON.parse(text) : null;
-
-      if (!dvlaRes.ok) {
-        return res.status(dvlaRes.status).json({
-          ok: false,
-          error: "DVLA error",
-        });
       }
-    } catch (err) {
-      return res.status(500).json({
+    );
+
+    const dvlaData = await dvlaRes.json();
+
+    if (!dvlaRes.ok) {
+      return res.status(dvlaRes.status).json({
         ok: false,
-        error: "Failed to contact DVLA",
+        error: "DVLA error",
       });
     }
 
@@ -170,27 +128,61 @@ module.exports = async (req, res) => {
     const fuelType = dvlaData?.fuelType || null;
     const bodyType = dvlaData?.bodyType || null;
 
-    // Paint match
-    let paintMatch = findPaintMatch(make, colour);
-    if (!paintMatch) paintMatch = findPaintMatch("", colour);
+    /* =========================
+       NEW: Paint Code API
+    ========================= */
+
+    let finalPaintCode = null;
+    let finalPaintName = null;
+    let paintMatch = null;
+
+    try {
+      const vehicleRes = await fetch(
+        `https://api.vehicledata.co.uk/vehicle?vrm=${reg}`,
+        {
+          headers: {
+            "x-api-key": process.env.VEHICLE_DATA_API_KEY,
+          },
+        }
+      );
+
+      const vehicleData = await vehicleRes.json();
+
+      finalPaintCode = vehicleData?.colour?.code || null;
+      finalPaintName = vehicleData?.colour?.description || null;
+
+    } catch (err) {
+      // silent fallback
+    }
+
+    /* =========================
+       FALLBACK to CSV
+    ========================= */
+
+    if (!finalPaintCode) {
+      paintMatch = findPaintMatch(make, colour) || findPaintMatch("", colour);
+      finalPaintCode = paintMatch?.paintCode || null;
+      finalPaintName = paintMatch?.paintName || null;
+    }
 
     const silhouetteKey = pickSilhouetteKey(make, model, bodyType);
 
-    // Formula lookup
+    /* =========================
+       Formula lookup
+    ========================= */
+
     let formula = null;
     let formulaError = null;
 
-    if (paintMatch?.paintCode) {
+    if (finalPaintCode) {
       try {
         const baseUrl = getBaseUrl(req);
 
         const formulaRes = await fetch(`${baseUrl}/api/formula`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            paintCode: paintMatch.paintCode,
+            paintCode: finalPaintCode,
             batchSize: finalBatchSize,
           }),
         });
@@ -210,23 +202,17 @@ module.exports = async (req, res) => {
     return res.json({
       ok: true,
       vrm: reg,
-      vehicle: {
-        make,
-        model,
-        colour,
-        year,
-        fuelType,
-        bodyType,
-      },
+      vehicle: { make, model, colour, year, fuelType, bodyType },
       silhouetteKey,
-      paintCode: paintMatch?.paintCode || null,
-      paintName: paintMatch?.paintName || null,
+      paintCode: finalPaintCode,
+      paintName: finalPaintName,
       swatch: paintMatch?.swatch || null,
       recipe: paintMatch?.recipe || null,
       batchSize: finalBatchSize,
       formula,
       formulaError,
     });
+
   } catch (err) {
     return res.status(500).json({
       ok: false,
