@@ -41,25 +41,8 @@ function pickSilhouetteKey(make, model, bodyType) {
   const bt = (bodyType || "").toUpperCase();
   const mk = (make || "").toUpperCase();
 
-  if (md.includes("XC") || md.includes("QASHQAI") || md.includes("SPORTAGE") || md.includes("KUGA") || md.includes("TIGUAN") || md.includes("RANGE") || md.includes("DISCOVERY") || md.includes("EVOQUE")) return "suv";
-  if (md.includes("TRANSIT") || md.includes("SPRINTER") || md.includes("VITO") || md.includes("CRAFTER")) return "van";
-  if (md.includes("HILUX") || md.includes("RANGER") || md.includes("NAVARA")) return "pickup";
-  if (md.includes("ESTATE") || md.includes("TOURER") || md.includes("WAGON")) return "estate";
-  if (md.includes("CABRIO") || md.includes("CONVERT")) return "convertible";
-  if (md.includes("COUPE")) return "coupe";
-  if (md.includes("HATCH")) return "hatch";
-
-  if (mk === "VOLVO" || mk === "LAND ROVER" || mk === "JEEP") return "suv";
-  if (mk === "MINI" || mk === "FORD" || mk === "VAUXHALL") return "hatch";
-
-  if (bt.includes("VAN")) return "van";
-  if (bt.includes("PICKUP")) return "pickup";
-  if (bt.includes("ESTATE")) return "estate";
-  if (bt.includes("COUPE")) return "coupe";
-  if (bt.includes("CONVERTIBLE")) return "convertible";
-  if (bt.includes("HATCHBACK")) return "hatch";
-  if (bt.includes("SALOON") || bt.includes("SEDAN")) return "sedan";
-  if (bt.includes("SUV") || bt.includes("4X4")) return "suv";
+  if (md.includes("XC")) return "suv";
+  if (bt.includes("SUV")) return "suv";
 
   return "generic";
 }
@@ -81,7 +64,6 @@ module.exports = async (req, res) => {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
     if (req.method === "OPTIONS") return res.status(200).end();
-
     if (req.method !== "POST") {
       return res.status(405).json({ ok: false, error: "POST only" });
     }
@@ -110,27 +92,19 @@ module.exports = async (req, res) => {
 
     const dvlaData = await dvlaRes.json();
 
-    if (!dvlaRes.ok) {
-      return res.status(dvlaRes.status).json({
-        ok: false,
-        error: "DVLA error",
-      });
-    }
-
-    let make = dvlaData?.make || null;
-    let model = dvlaData?.model || null;
-    let colour = dvlaData?.colour || null;
-    let year = dvlaData?.yearOfManufacture || null;
-    let fuelType = dvlaData?.fuelType || null;
-    let bodyType = dvlaData?.bodyType || null;
+    const make = dvlaData?.make || null;
+    const model = dvlaData?.model || null;
+    const colour = dvlaData?.colour || null;
+    const year = dvlaData?.yearOfManufacture || null;
+    const fuelType = dvlaData?.fuelType || null;
+    const bodyType = dvlaData?.bodyType || null;
 
     /* =========================
-       Vehicle Data Global Paint Code API
+       REAL Paint Code API
     ========================= */
 
     let finalPaintCode = null;
     let finalPaintName = null;
-    let paintMatch = null;
 
     try {
       const vehicleRes = await fetch(
@@ -141,17 +115,12 @@ module.exports = async (req, res) => {
 
       console.log("PAINT API RESPONSE:", JSON.stringify(vehicleData));
 
-      const paintDetails = vehicleData?.Results?.PaintCodeDetails || null;
-      const paintList = paintDetails?.PaintCodeList || [];
+      const paintList =
+        vehicleData?.Results?.PaintCodeDetails?.PaintCodeList || [];
 
-      if (Array.isArray(paintList) && paintList.length > 0) {
-        finalPaintCode = paintList[0]?.Code || null;
-        finalPaintName = paintList[0]?.Description || null;
-
-        make = paintDetails?.Make || make;
-        model = paintDetails?.Model || model;
-        colour = paintDetails?.CurrentColour || colour;
-        fuelType = paintDetails?.FuelType || fuelType;
+      if (paintList.length > 0) {
+        finalPaintCode = paintList[0].Code;
+        finalPaintName = paintList[0].Description;
       }
 
       console.log("PAINT CODE:", finalPaintCode);
@@ -161,13 +130,18 @@ module.exports = async (req, res) => {
     }
 
     /* =========================
-       Fallback to CSV only if no API paint code
+       🔴 HARD STOP (NO FALLBACK)
     ========================= */
 
     if (!finalPaintCode) {
-      paintMatch = findPaintMatch(make, colour) || findPaintMatch("", colour);
-      finalPaintCode = paintMatch?.paintCode || null;
-      finalPaintName = paintMatch?.paintName || null;
+      return res.json({
+        ok: false,
+        error: "REAL API RETURNED NO PAINT CODE",
+        vrm: reg,
+        make,
+        model,
+        colour
+      });
     }
 
     const silhouetteKey = pickSilhouetteKey(make, model, bodyType);
@@ -177,32 +151,22 @@ module.exports = async (req, res) => {
     ========================= */
 
     let formula = null;
-    let formulaError = null;
 
-    if (finalPaintCode) {
-      try {
-        const baseUrl = getBaseUrl(req);
+    try {
+      const baseUrl = getBaseUrl(req);
 
-        const formulaRes = await fetch(`${baseUrl}/api/formula`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            paintCode: finalPaintCode,
-            batchSize: finalBatchSize,
-          }),
-        });
+      const formulaRes = await fetch(`${baseUrl}/api/formula`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          paintCode: finalPaintCode,
+          batchSize: finalBatchSize,
+        }),
+      });
 
-        const formulaData = await formulaRes.json();
-
-        if (formulaData.ok) {
-          formula = formulaData;
-        } else {
-          formulaError = formulaData.error || "Formula lookup failed";
-        }
-      } catch (err) {
-        formulaError = "Formula lookup failed";
-      }
-    }
+      const formulaData = await formulaRes.json();
+      if (formulaData.ok) formula = formulaData;
+    } catch {}
 
     return res.json({
       ok: true,
@@ -211,12 +175,10 @@ module.exports = async (req, res) => {
       silhouetteKey,
       paintCode: finalPaintCode,
       paintName: finalPaintName,
-      swatch: paintMatch?.swatch || null,
-      recipe: paintMatch?.recipe || null,
       batchSize: finalBatchSize,
       formula,
-      formulaError,
     });
+
   } catch (err) {
     return res.status(500).json({
       ok: false,
