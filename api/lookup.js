@@ -37,9 +37,9 @@ function findPaintMatch(make, colour) {
 ========================= */
 
 function pickSilhouetteKey(make, model, bodyType) {
-  const mk = (make || "").toUpperCase();
   const md = (model || "").toUpperCase();
   const bt = (bodyType || "").toUpperCase();
+  const mk = (make || "").toUpperCase();
 
   if (md.includes("XC") || md.includes("QASHQAI") || md.includes("SPORTAGE") || md.includes("KUGA") || md.includes("TIGUAN") || md.includes("RANGE") || md.includes("DISCOVERY") || md.includes("EVOQUE")) return "suv";
   if (md.includes("TRANSIT") || md.includes("SPRINTER") || md.includes("VITO") || md.includes("CRAFTER")) return "van";
@@ -52,22 +52,17 @@ function pickSilhouetteKey(make, model, bodyType) {
   if (mk === "VOLVO" || mk === "LAND ROVER" || mk === "JEEP") return "suv";
   if (mk === "MINI" || mk === "FORD" || mk === "VAUXHALL") return "hatch";
 
-  if (bt.includes("MOTORCYCLE")) return "motorcycle";
-  if (bt.includes("PANEL VAN") || bt.includes("VAN")) return "van";
+  if (bt.includes("VAN")) return "van";
   if (bt.includes("PICKUP")) return "pickup";
   if (bt.includes("ESTATE")) return "estate";
   if (bt.includes("COUPE")) return "coupe";
   if (bt.includes("CONVERTIBLE")) return "convertible";
   if (bt.includes("HATCHBACK")) return "hatch";
   if (bt.includes("SALOON") || bt.includes("SEDAN")) return "sedan";
-  if (bt.includes("SUV") || bt.includes("4X4") || bt.includes("CROSSOVER")) return "suv";
+  if (bt.includes("SUV") || bt.includes("4X4")) return "suv";
 
   return "generic";
 }
-
-/* =========================
-   Helper
-========================= */
 
 function getBaseUrl(req) {
   const host = req.headers.host;
@@ -86,6 +81,7 @@ module.exports = async (req, res) => {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
     if (req.method === "OPTIONS") return res.status(200).end();
+
     if (req.method !== "POST") {
       return res.status(405).json({ ok: false, error: "POST only" });
     }
@@ -97,7 +93,7 @@ module.exports = async (req, res) => {
     const finalBatchSize = Number(batchSize) || 15;
 
     /* =========================
-       DVLA lookup (basic vehicle data)
+       DVLA lookup
     ========================= */
 
     const dvlaRes = await fetch(
@@ -121,15 +117,15 @@ module.exports = async (req, res) => {
       });
     }
 
-    const make = dvlaData?.make || null;
-    const model = dvlaData?.model || null;
-    const colour = dvlaData?.colour || null;
-    const year = dvlaData?.yearOfManufacture || null;
-    const fuelType = dvlaData?.fuelType || null;
-    const bodyType = dvlaData?.bodyType || null;
+    let make = dvlaData?.make || null;
+    let model = dvlaData?.model || null;
+    let colour = dvlaData?.colour || null;
+    let year = dvlaData?.yearOfManufacture || null;
+    let fuelType = dvlaData?.fuelType || null;
+    let bodyType = dvlaData?.bodyType || null;
 
     /* =========================
-       REAL Paint Code API
+       Vehicle Data Global Paint Code API
     ========================= */
 
     let finalPaintCode = null;
@@ -143,23 +139,29 @@ module.exports = async (req, res) => {
 
       const vehicleData = await vehicleRes.json();
 
-      console.log("PAINT API RESPONSE:", vehicleData);
+      console.log("PAINT API RESPONSE:", JSON.stringify(vehicleData));
 
-      finalPaintCode =
-        vehicleData?.PaintCodeDetails?.PaintCodeList?.[0]?.Code || null;
+      const paintDetails = vehicleData?.Results?.PaintCodeDetails || null;
+      const paintList = paintDetails?.PaintCodeList || [];
 
-      finalPaintName =
-        vehicleData?.PaintCodeDetails?.PaintCodeList?.[0]?.Description || null;
+      if (Array.isArray(paintList) && paintList.length > 0) {
+        finalPaintCode = paintList[0]?.Code || null;
+        finalPaintName = paintList[0]?.Description || null;
+
+        make = paintDetails?.Make || make;
+        model = paintDetails?.Model || model;
+        colour = paintDetails?.CurrentColour || colour;
+        fuelType = paintDetails?.FuelType || fuelType;
+      }
 
       console.log("PAINT CODE:", finalPaintCode);
       console.log("PAINT NAME:", finalPaintName);
-
     } catch (err) {
       console.log("Paint API failed:", err);
     }
 
     /* =========================
-       FALLBACK to CSV
+       Fallback to CSV only if no API paint code
     ========================= */
 
     if (!finalPaintCode) {
@@ -215,7 +217,6 @@ module.exports = async (req, res) => {
       formula,
       formulaError,
     });
-
   } catch (err) {
     return res.status(500).json({
       ok: false,
