@@ -1,45 +1,36 @@
 const fetch = require("node-fetch");
-const fs = require("fs");
-const path = require("path");
 
 /* =========================
-   Paint CSV helpers
+   Simple in-memory cache
 ========================= */
 
-function loadPaintCodes() {
-  const filePath = path.join(process.cwd(), "data", "paintcodes.csv");
-  const raw = fs.readFileSync(filePath, "utf8").trim();
-  const lines = raw.split("\n");
-  const headers = lines[0].split(",").map((h) => h.trim());
+const paintCache = global.paintCache || new Map();
+global.paintCache = paintCache;
 
-  return lines.slice(1).map((line) => {
-    const cols = line.split(",").map((c) => c.trim());
-    const row = {};
-    headers.forEach((h, i) => (row[h] = cols[i] ?? ""));
-    return row;
+const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+
+function getCached(reg) {
+  const item = paintCache.get(reg);
+  if (!item) return null;
+
+  if (Date.now() - item.savedAt > CACHE_TTL_MS) {
+    paintCache.delete(reg);
+    return null;
+  }
+
+  return item.data;
+}
+
+function setCached(reg, data) {
+  paintCache.set(reg, {
+    savedAt: Date.now(),
+    data,
   });
 }
-
-function findPaintMatch(make, colour) {
-  const rows = loadPaintCodes();
-  const m = (make || "").toUpperCase();
-  const c = (colour || "").toUpperCase();
-
-  return rows.find(
-    (r) =>
-      (r.make || "").toUpperCase() === m &&
-      (r.colour || "").toUpperCase() === c
-  );
-}
-
-/* =========================
-   Silhouette logic
-========================= */
 
 function pickSilhouetteKey(make, model, bodyType) {
   const md = (model || "").toUpperCase();
   const bt = (bodyType || "").toUpperCase();
-  const mk = (make || "").toUpperCase();
 
   if (md.includes("XC")) return "suv";
   if (bt.includes("SUV")) return "suv";
@@ -53,10 +44,6 @@ function getBaseUrl(req) {
   return `${proto}://${host}`;
 }
 
-/* =========================
-   API Handler
-========================= */
-
 module.exports = async (req, res) => {
   try {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -64,6 +51,7 @@ module.exports = async (req, res) => {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
     if (req.method === "OPTIONS") return res.status(200).end();
+
     if (req.method !== "POST") {
       return res.status(405).json({ ok: false, error: "POST only" });
     }
@@ -74,9 +62,13 @@ module.exports = async (req, res) => {
     const reg = String(vrm).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
     const finalBatchSize = Number(batchSize) || 15;
 
-    /* =========================
-       DVLA lookup
-    ========================= */
+    const cached = getCached(reg);
+    if (cached) {
+      return res.json({
+        ...cached,
+        fromCache: true,
+      });
+    }
 
     const dvlaRes = await fetch(
       "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles",
@@ -92,46 +84,36 @@ module.exports = async (req, res) => {
 
     const dvlaData = await dvlaRes.json();
 
-    const make = dvlaData?.make || null;
-    const model = dvlaData?.model || null;
-    const colour = dvlaData?.colour || null;
-    const year = dvlaData?.yearOfManufacture || null;
-    const fuelType = dvlaData?.fuelType || null;
-    const bodyType = dvlaData?.bodyType || null;
-
-    /* =========================
-       REAL Paint Code API
-    ========================= */
+    let make = dvlaData?.make || null;
+    let model = dvlaData?.model || null;
+    let colour = dvlaData?.colour || null;
+    let year = dvlaData?.yearOfManufacture || null;
+    let fuelType = dvlaData?.fuelType || null;
+    let bodyType = dvlaData?.bodyType || null;
 
     let finalPaintCode = null;
     let finalPaintName = null;
 
-    try {
-      const vehicleRes = await fetch(
-        `https://uk.api.vehicledataglobal.com/r2/lookup?packagename=PaintCodeDetails&apikey=${process.env.VEHICLE_DATA_API_KEY}&vrm=${reg}`
-      );
+    const vehicleRes = await fetch(
+      `https://uk.api.vehicledataglobal.com/r2/lookup?packagename=PaintCodeDetails&apikey=${process.env.VEHICLE_DATA_API_KEY}&vrm=${reg}`
+    );
 
-      const vehicleData = await vehicleRes.json();
+    const vehicleData = await vehicleRes.json();
 
-      console.log("PAINT API RESPONSE:", JSON.stringify(vehicleData));
+    console.log("PAINT API RESPONSE:", JSON.stringify(vehicleData));
 
-      const paintList =
-        vehicleData?.Results?.PaintCodeDetails?.PaintCodeList || [];
+    const paintDetails = vehicleData?.Results?.PaintCodeDetails || {};
+    const paintList = paintDetails?.PaintCodeList || [];
 
-      if (paintList.length > 0) {
-        finalPaintCode = paintList[0].Code;
-        finalPaintName = paintList[0].Description;
-      }
+    if (paintList.length > 0) {
+      finalPaintCode = paintList[0].Code;
+      finalPaintName = paintList[0].Description;
 
-      console.log("PAINT CODE:", finalPaintCode);
-      console.log("PAINT NAME:", finalPaintName);
-    } catch (err) {
-      console.log("Paint API failed:", err);
+      make = paintDetails.Make || make;
+      model = paintDetails.Model || model;
+      colour = paintDetails.CurrentColour || colour;
+      fuelType = paintDetails.FuelType || fuelType;
     }
-
-    /* =========================
-       🔴 HARD STOP (NO FALLBACK)
-    ========================= */
 
     if (!finalPaintCode) {
       return res.json({
@@ -140,15 +122,12 @@ module.exports = async (req, res) => {
         vrm: reg,
         make,
         model,
-        colour
+        colour,
+        fromCache: false,
       });
     }
 
     const silhouetteKey = pickSilhouetteKey(make, model, bodyType);
-
-    /* =========================
-       Formula lookup
-    ========================= */
 
     let formula = null;
 
@@ -168,7 +147,7 @@ module.exports = async (req, res) => {
       if (formulaData.ok) formula = formulaData;
     } catch {}
 
-    return res.json({
+    const responseData = {
       ok: true,
       vrm: reg,
       vehicle: { make, model, colour, year, fuelType, bodyType },
@@ -177,9 +156,16 @@ module.exports = async (req, res) => {
       paintName: finalPaintName,
       batchSize: finalBatchSize,
       formula,
-    });
+      fromCache: false,
+    };
+
+    setCached(reg, responseData);
+
+    return res.json(responseData);
 
   } catch (err) {
+    console.error("Lookup failed:", err);
+
     return res.status(500).json({
       ok: false,
       error: "lookup failed",
