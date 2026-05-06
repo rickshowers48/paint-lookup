@@ -1,19 +1,20 @@
 const fetch = require("node-fetch");
 
 /* =========================
-   Simple in-memory cache
+   In-memory backup cache
 ========================= */
 
 const paintCache = global.paintCache || new Map();
 global.paintCache = paintCache;
 
-const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+const MEMORY_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+const REDIS_CACHE_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year
 
 function getCached(reg) {
   const item = paintCache.get(reg);
   if (!item) return null;
 
-  if (Date.now() - item.savedAt > CACHE_TTL_MS) {
+  if (Date.now() - item.savedAt > MEMORY_CACHE_TTL_MS) {
     paintCache.delete(reg);
     return null;
   }
@@ -26,6 +27,72 @@ function setCached(reg, data) {
     savedAt: Date.now(),
     data,
   });
+}
+
+function redisReady() {
+  return Boolean(
+    process.env.UPSTASH_REDIS_REST_URL &&
+    process.env.UPSTASH_REDIS_REST_TOKEN
+  );
+}
+
+async function getPersistentCached(reg) {
+  const memoryCached = getCached(reg);
+  if (memoryCached) return memoryCached;
+
+  if (!redisReady()) return null;
+
+  try {
+    const key = `paintlookup:${reg}`;
+
+    const r = await fetch(
+      `${process.env.UPSTASH_REDIS_REST_URL}/get/${encodeURIComponent(key)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
+        },
+      }
+    );
+
+    const json = await r.json();
+
+    if (!json.result) return null;
+
+    const data = JSON.parse(json.result);
+    setCached(reg, data);
+
+    return data;
+  } catch (err) {
+    console.warn("Redis cache read failed:", err);
+    return null;
+  }
+}
+
+async function setPersistentCached(reg, data) {
+  setCached(reg, data);
+
+  if (!redisReady()) return;
+
+  try {
+    const key = `paintlookup:${reg}`;
+
+    await fetch(
+      `${process.env.UPSTASH_REDIS_REST_URL}/set/${encodeURIComponent(key)}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          value: JSON.stringify(data),
+          ex: REDIS_CACHE_TTL_SECONDS,
+        }),
+      }
+    );
+  } catch (err) {
+    console.warn("Redis cache save failed:", err);
+  }
 }
 
 function pickSilhouetteKey(make, model, bodyType) {
@@ -62,7 +129,7 @@ module.exports = async (req, res) => {
     const reg = String(vrm).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
     const finalBatchSize = Number(batchSize) || 15;
 
-    const cached = getCached(reg);
+    const cached = await getPersistentCached(reg);
     if (cached) {
       return res.json({
         ...cached,
@@ -159,10 +226,9 @@ module.exports = async (req, res) => {
       fromCache: false,
     };
 
-    setCached(reg, responseData);
+    await setPersistentCached(reg, responseData);
 
     return res.json(responseData);
-
   } catch (err) {
     console.error("Lookup failed:", err);
 
