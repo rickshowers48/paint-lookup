@@ -5,6 +5,7 @@ const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
+
 /* =========================
    In-memory backup cache
 ========================= */
@@ -17,6 +18,7 @@ const REDIS_CACHE_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year
 
 function getCached(reg) {
   const item = paintCache.get(reg);
+
   if (!item) return null;
 
   if (Date.now() - item.savedAt > MEMORY_CACHE_TTL_MS) {
@@ -42,65 +44,68 @@ function redisReady() {
 }
 
 async function getPersistentCached(reg) {
-  const memoryCached = getCached(reg);
-  if (memoryCached) return memoryCached;
 
+  // Fast memory cache first
+  const memoryCached = getCached(reg);
+
+  if (memoryCached) {
+    console.log("MEMORY CACHE HIT:", reg);
+    return memoryCached;
+  }
+
+  // Redis cache second
   if (!redisReady()) return null;
 
   try {
+
     const key = `paintlookup:${reg}`;
 
-    const r = await fetch(
-      `${process.env.UPSTASH_REDIS_REST_URL}/get/${encodeURIComponent(key)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
-        },
-      }
-    );
+    const data = await redis.get(key);
 
-    const json = await r.json();
+    if (!data) {
+      console.log("CACHE MISS:", reg);
+      return null;
+    }
 
-    if (!json.result) return null;
+    console.log("REDIS CACHE HIT:", reg);
 
-    const data = JSON.parse(json.result);
+    // Rehydrate memory cache
     setCached(reg, data);
 
     return data;
+
   } catch (err) {
+
     console.warn("Redis cache read failed:", err);
     return null;
   }
 }
 
 async function setPersistentCached(reg, data) {
+
+  // Save to memory cache
   setCached(reg, data);
 
   if (!redisReady()) return;
 
   try {
+
     const key = `paintlookup:${reg}`;
 
-    await fetch(
-      `${process.env.UPSTASH_REDIS_REST_URL}/set/${encodeURIComponent(key)}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          value: JSON.stringify(data),
-          ex: REDIS_CACHE_TTL_SECONDS,
-        }),
-      }
-    );
+    await redis.set(key, data, {
+      ex: REDIS_CACHE_TTL_SECONDS,
+    });
+
+    console.log("REDIS CACHE SAVED:", reg);
+
   } catch (err) {
+
     console.warn("Redis cache save failed:", err);
   }
 }
 
 function pickSilhouetteKey(make, model, bodyType) {
+
   const md = (model || "").toUpperCase();
   const bt = (bodyType || "").toUpperCase();
 
@@ -111,36 +116,66 @@ function pickSilhouetteKey(make, model, bodyType) {
 }
 
 function getBaseUrl(req) {
+
   const host = req.headers.host;
   const proto = req.headers["x-forwarded-proto"] || "https";
+
   return `${proto}://${host}`;
 }
 
 module.exports = async (req, res) => {
+
   try {
+
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-    if (req.method === "OPTIONS") return res.status(200).end();
+    if (req.method === "OPTIONS") {
+      return res.status(200).end();
+    }
 
     if (req.method !== "POST") {
-      return res.status(405).json({ ok: false, error: "POST only" });
+      return res.status(405).json({
+        ok: false,
+        error: "POST only",
+      });
     }
 
     const { vrm, batchSize } = req.body || {};
-    if (!vrm) return res.status(400).json({ ok: false, error: "Missing VRM" });
 
-    const reg = String(vrm).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    if (!vrm) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing VRM",
+      });
+    }
+
+    const reg = String(vrm)
+      .replace(/[^A-Za-z0-9]/g, "")
+      .toUpperCase();
+
     const finalBatchSize = Number(batchSize) || 15;
 
+    /* =========================
+       CACHE CHECK
+    ========================= */
+
     const cached = await getPersistentCached(reg);
+
     if (cached) {
+
       return res.json({
         ...cached,
         fromCache: true,
       });
     }
+
+    console.log("LIVE API LOOKUP:", reg);
+
+    /* =========================
+       DVLA LOOKUP
+    ========================= */
 
     const dvlaRes = await fetch(
       "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles",
@@ -150,7 +185,9 @@ module.exports = async (req, res) => {
           "Content-Type": "application/json",
           "x-api-key": process.env.DVLA_API_KEY,
         },
-        body: JSON.stringify({ registrationNumber: reg }),
+        body: JSON.stringify({
+          registrationNumber: reg,
+        }),
       }
     );
 
@@ -163,6 +200,10 @@ module.exports = async (req, res) => {
     let fuelType = dvlaData?.fuelType || null;
     let bodyType = dvlaData?.bodyType || null;
 
+    /* =========================
+       VEHICLE DATA GLOBAL LOOKUP
+    ========================= */
+
     let finalPaintCode = null;
     let finalPaintName = null;
 
@@ -172,12 +213,19 @@ module.exports = async (req, res) => {
 
     const vehicleData = await vehicleRes.json();
 
-    console.log("PAINT API RESPONSE:", JSON.stringify(vehicleData));
+    console.log(
+      "PAINT API RESPONSE:",
+      JSON.stringify(vehicleData)
+    );
 
-    const paintDetails = vehicleData?.Results?.PaintCodeDetails || {};
-    const paintList = paintDetails?.PaintCodeList || [];
+    const paintDetails =
+      vehicleData?.Results?.PaintCodeDetails || {};
+
+    const paintList =
+      paintDetails?.PaintCodeList || [];
 
     if (paintList.length > 0) {
+
       finalPaintCode = paintList[0].Code;
       finalPaintName = paintList[0].Description;
 
@@ -188,6 +236,7 @@ module.exports = async (req, res) => {
     }
 
     if (!finalPaintCode) {
+
       return res.json({
         ok: false,
         error: "REAL API RETURNED NO PAINT CODE",
@@ -199,30 +248,59 @@ module.exports = async (req, res) => {
       });
     }
 
-    const silhouetteKey = pickSilhouetteKey(make, model, bodyType);
+    /* =========================
+       FORMULA LOOKUP
+    ========================= */
+
+    const silhouetteKey =
+      pickSilhouetteKey(make, model, bodyType);
 
     let formula = null;
 
     try {
+
       const baseUrl = getBaseUrl(req);
 
-      const formulaRes = await fetch(`${baseUrl}/api/formula`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          paintCode: finalPaintCode,
-          batchSize: finalBatchSize,
-        }),
-      });
+      const formulaRes = await fetch(
+        `${baseUrl}/api/formula`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            paintCode: finalPaintCode,
+            batchSize: finalBatchSize,
+          }),
+        }
+      );
 
       const formulaData = await formulaRes.json();
-      if (formulaData.ok) formula = formulaData;
-    } catch {}
+
+      if (formulaData.ok) {
+        formula = formulaData;
+      }
+
+    } catch (err) {
+
+      console.warn("Formula lookup failed:", err);
+    }
+
+    /* =========================
+       FINAL RESPONSE
+    ========================= */
 
     const responseData = {
       ok: true,
       vrm: reg,
-      vehicle: { make, model, colour, year, fuelType, bodyType },
+      vehicle: {
+        make,
+        model,
+        colour,
+        year,
+        fuelType,
+        bodyType,
+      },
       silhouetteKey,
       paintCode: finalPaintCode,
       paintName: finalPaintName,
@@ -231,10 +309,16 @@ module.exports = async (req, res) => {
       fromCache: false,
     };
 
+    /* =========================
+       SAVE CACHE
+    ========================= */
+
     await setPersistentCached(reg, responseData);
 
     return res.json(responseData);
+
   } catch (err) {
+
     console.error("Lookup failed:", err);
 
     return res.status(500).json({
