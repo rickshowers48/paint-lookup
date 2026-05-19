@@ -348,7 +348,7 @@ async function getCached(reg) {
   }
   if (!redisReady()) return null;
   try {
-    const data = await redis.get(`paintlookup:${reg}`);
+    const data = await redis.get(`paintlookup_v2:${reg}`);
     if (data) {
       console.log(`Redis cache hit: ${reg}`);
       memorySet(reg, data);
@@ -365,7 +365,7 @@ async function setCached(reg, data, isNegative) {
   if (!redisReady()) return;
   try {
     const ttl = isNegative ? REDIS_NEGATIVE_TTL_SECONDS : REDIS_SUCCESS_TTL_SECONDS;
-    await redis.set(`paintlookup:${reg}`, data, { ex: ttl });
+    await redis.set(`paintlookup_v2:${reg}`, data, { ex: ttl });
   } catch (err) {
     console.warn("Redis save failed:", err.message);
   }
@@ -457,10 +457,29 @@ module.exports = async (req, res) => {
     const paintName = vdg?.paintName || null;
 
     // ---------- 6. NO PAINT CODE? ----------
-    // We found the vehicle but VDG doesn't have a paint code for it.
-    // Common for vans, some commercial vehicles, and obscure models.
-    // Cache this negatively for 7 days so we don't keep paying VDG.
+    // Two very different reasons we get here, must not be conflated:
+    //   (a) VDG had a transient failure (timeout/5xx/network blip) and
+    //       returned null. This is NOT "car not supported" — do NOT cache.
+    //       Return a soft try-again so a retry can succeed.
+    //   (b) VDG actually answered and confirmed it has no paint data for
+    //       this vehicle (common for vans, commercials, obscure imports).
+    //       This IS legitimate — cache negatively for 7 days to save VDG
+    //       budget on repeat lookups.
     if (!paintCode) {
+      const vdgSucceeded = vdg !== null;
+
+      if (!vdgSucceeded) {
+        console.warn(`VDG failed for ${reg}; returning transient (not cached)`);
+        return res.status(200).json({
+          ok: false,
+          status: "lookup_unavailable",
+          message:
+            "Paint lookup service is having a moment. Please try again in a few seconds.",
+          vrm: reg,
+          vehicle: { make, model, colour, year, fuelType, bodyType },
+        });
+      }
+
       const noPaint = {
         ok: false,
         status: "paint_not_found",
