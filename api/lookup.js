@@ -52,6 +52,18 @@ const ALLOWED_ORIGINS = [
   "https://manage.wix.com",
 ];
 
+// Wix serves HTML embed widgets from sandboxed iframe domains rather than
+// directly from your custom domain. The widget on the home page reports an
+// origin like https://www-paintmatchpen-com.filesusr.com — the exact
+// subdomain varies between published, preview, mobile, and editor contexts.
+// We accept any *.filesusr.com / *.wixsite.com / *.wix.com origin in
+// addition to the explicit allow list above.
+const WIX_ORIGIN_SUFFIXES = [
+  ".filesusr.com",
+  ".wixsite.com",
+  ".wix.com",
+];
+
 const API_TIMEOUT_MS = 6000;                            // 6 seconds per API
 const MEMORY_CACHE_TTL_MS = 60 * 60 * 1000;             // 1 hour
 const REDIS_SUCCESS_TTL_SECONDS = 60 * 60 * 24 * 365;   // 1 year
@@ -118,13 +130,26 @@ function isValidVRM(vrm) {
 // CORS
 // ============================================================
 
+function isOriginAllowed(origin) {
+  if (!origin) return false;
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  // Allow Wix-hosted iframe domains (HTML embed widgets)
+  for (const suffix of WIX_ORIGIN_SUFFIXES) {
+    if (origin.endsWith(suffix)) return true;
+  }
+  return false;
+}
+
 function applyCORS(req, res) {
   const origin = req.headers.origin || "";
-  if (ALLOWED_ORIGINS.includes(origin)) {
+  if (isOriginAllowed(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  // Cache the preflight response for 1 hour so the browser doesn't OPTIONS
+  // us on every single lookup
+  res.setHeader("Access-Control-Max-Age", "3600");
 }
 
 // ============================================================
