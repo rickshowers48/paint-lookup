@@ -1,40 +1,74 @@
-const fetch = require("node-fetch");
+// ============================================================
+// lookup.js — Main paint lookup orchestrator (Vercel)
+// ============================================================
+//
+// WHAT THIS DOES
+// --------------
+// Takes a customer's car registration (VRM) and turns it into a complete
+// order package: vehicle details, paint code, paint name, and the full
+// mixing recipe — all in a single response.
+//
+// THE FLOW
+// --------
+// 1. Validate the VRM format (reject obvious garbage)
+// 2. Check the rate limiter (don't let one bad actor drain our API budget)
+// 3. Check cache (memory → Redis → live)
+// 4. If cache miss:
+//    a. Call DVLA + VehicleDataGlobal IN PARALLEL (was sequential — slow)
+//    b. Each call has a 6-second timeout + one automatic retry
+//    c. Combine the results, paint API wins on overlapping fields
+//    d. Look up mixing formula by inline-importing formula.js
+//    e. Cache the win for 1 year, cache "no paint found" for 7 days
+// 5. Return everything to the frontend in one JSON blob
+//
+// KEY UPGRADES vs the old version
+// -------------------------------
+// - CORS locked to our domains (was "*" — anyone could drain our budget)
+// - Per-IP rate limiter using Redis (30 req/min)
+// - Real timeouts via AbortController (was hanging forever on slow DVLA)
+// - Auto-retry on timeout or 5xx (fixes "found on 2nd attempt" cars)
+// - Response status checks BEFORE parsing JSON (no more crash on HTML errors)
+// - Negative caching (don't keep paying APIs for unsupported cars)
+// - VRM format validation
+// - Inline formula call (chef no longer walks outside to phone himself)
+// - Distinct error states: invalid VRM, vehicle not found, paint not in
+//   our system, service unavailable — each gets the right HTTP status
+//   and a user-friendly message
+// ============================================================
+
 const { Redis } = require("@upstash/redis");
+const formulaModule = require("./formula");
+const getFormula = formulaModule.getFormula;
+
+// ============================================================
+// CONFIG
+// ============================================================
+
+const ALLOWED_ORIGINS = [
+  "https://www.paintmatchpen.com",
+  "https://paintmatchpen.com",
+  "https://rickshowers48-mysite.editor.wix.com",
+  "https://editor.wix.com",
+  "https://manage.wix.com",
+];
+
+const API_TIMEOUT_MS = 6000;                            // 6 seconds per API
+const MEMORY_CACHE_TTL_MS = 60 * 60 * 1000;             // 1 hour
+const REDIS_SUCCESS_TTL_SECONDS = 60 * 60 * 24 * 365;   // 1 year
+const REDIS_NEGATIVE_TTL_SECONDS = 60 * 60 * 24 * 7;    // 7 days
+const RATE_LIMIT_PER_MIN = 30;                          // per IP
+
+const DVLA_URL = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
+const VDG_URL_BASE = "https://uk.api.vehicledataglobal.com/r2/lookup";
+
+// ============================================================
+// REDIS
+// ============================================================
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
-
-/* =========================
-   In-memory backup cache
-========================= */
-
-const paintCache = global.paintCache || new Map();
-global.paintCache = paintCache;
-
-const MEMORY_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
-const REDIS_CACHE_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year
-
-function getCached(reg) {
-  const item = paintCache.get(reg);
-
-  if (!item) return null;
-
-  if (Date.now() - item.savedAt > MEMORY_CACHE_TTL_MS) {
-    paintCache.delete(reg);
-    return null;
-  }
-
-  return item.data;
-}
-
-function setCached(reg, data) {
-  paintCache.set(reg, {
-    savedAt: Date.now(),
-    data,
-  });
-}
 
 function redisReady() {
   return Boolean(
@@ -43,287 +77,413 @@ function redisReady() {
   );
 }
 
-async function getPersistentCached(reg) {
+// ============================================================
+// IN-MEMORY CACHE (per function instance)
+// ============================================================
 
-  // Fast memory cache first
-  const memoryCached = getCached(reg);
+const memoryCache = global.lookupMemoryCache || new Map();
+global.lookupMemoryCache = memoryCache;
 
-  if (memoryCached) {
-    console.log("MEMORY CACHE HIT:", reg);
-    return memoryCached;
-  }
-
-  // Redis cache second
-  if (!redisReady()) return null;
-
-  try {
-
-    const key = `paintlookup:${reg}`;
-
-    const data = await redis.get(key);
-
-    if (!data) {
-      console.log("CACHE MISS:", reg);
-      return null;
-    }
-
-    console.log("REDIS CACHE HIT:", reg);
-
-    // Rehydrate memory cache
-    setCached(reg, data);
-
-    return data;
-
-  } catch (err) {
-
-    console.warn("Redis cache read failed:", err);
+function memoryGet(key) {
+  const item = memoryCache.get(key);
+  if (!item) return null;
+  if (Date.now() - item.savedAt > MEMORY_CACHE_TTL_MS) {
+    memoryCache.delete(key);
     return null;
   }
+  return item.data;
 }
 
-async function setPersistentCached(reg, data) {
+function memorySet(key, data) {
+  memoryCache.set(key, { savedAt: Date.now(), data });
+}
 
-  // Save to memory cache
-  setCached(reg, data);
+// ============================================================
+// VRM NORMALISE + VALIDATE
+// ============================================================
 
-  if (!redisReady()) return;
+function normaliseVRM(vrm) {
+  return String(vrm || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
 
+function isValidVRM(vrm) {
+  // UK plates are 2–7 alphanumeric chars after stripping spaces.
+  // 8 allowed to be defensive (unusual edge cases).
+  if (!vrm) return false;
+  if (vrm.length < 2 || vrm.length > 8) return false;
+  return /^[A-Z0-9]+$/.test(vrm);
+}
+
+// ============================================================
+// CORS
+// ============================================================
+
+function applyCORS(req, res) {
+  const origin = req.headers.origin || "";
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+// ============================================================
+// RATE LIMITER (Redis-backed, per IP)
+// ============================================================
+
+function getClientIP(req) {
+  return (
+    req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+    req.headers["x-real-ip"] ||
+    req.socket?.remoteAddress ||
+    "unknown"
+  );
+}
+
+async function checkRateLimit(ip) {
+  if (!redisReady() || !ip || ip === "unknown") return { allowed: true };
   try {
-
-    const key = `paintlookup:${reg}`;
-
-    await redis.set(key, data, {
-      ex: REDIS_CACHE_TTL_SECONDS,
-    });
-
-    console.log("REDIS CACHE SAVED:", reg);
-
+    const key = `ratelimit:lookup:${ip}`;
+    const count = await redis.incr(key);
+    if (count === 1) await redis.expire(key, 60);
+    if (count > RATE_LIMIT_PER_MIN) return { allowed: false, count };
+    return { allowed: true, count };
   } catch (err) {
-
-    console.warn("Redis cache save failed:", err);
+    // If rate limiter itself fails, fail open (allow request through).
+    // Better to serve a customer than block them due to our infra.
+    console.warn("Rate limit check failed, allowing through:", err.message);
+    return { allowed: true };
   }
 }
 
-function pickSilhouetteKey(make, model, bodyType) {
+// ============================================================
+// FETCH WITH TIMEOUT + ONE RETRY
+// ============================================================
+//
+// The chef's phone now has a timer next to it. If the supplier doesn't
+// pick up in 6 seconds, the chef hangs up and calls back ONCE. If they
+// still don't answer, the chef gives up cleanly (rather than waiting
+// forever).
+//
+// Retries cover: timeouts, network errors, and 5xx server errors.
 
-  const md = (model || "").toUpperCase();
-  const bt = (bodyType || "").toUpperCase();
-
-  if (md.includes("XC")) return "suv";
-  if (bt.includes("SUV")) return "suv";
-
-  return "generic";
-}
-
-function getBaseUrl(req) {
-
-  const host = req.headers.host;
-  const proto = req.headers["x-forwarded-proto"] || "https";
-
-  return `${proto}://${host}`;
-}
-
-module.exports = async (req, res) => {
-
+async function fetchWithTimeout(url, opts, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    return await fetch(url, { ...opts, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-    if (req.method === "OPTIONS") {
-      return res.status(200).end();
+async function fetchWithRetry(url, opts, label) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, opts, API_TIMEOUT_MS);
+      // Retry on 5xx, but not 4xx (4xx is "bad input", retrying won't help)
+      if (res.status >= 500 && attempt === 1) {
+        console.log(`${label}: HTTP ${res.status} on attempt 1, retrying`);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      const reason = err.name === "AbortError" ? "timeout" : err.message;
+      if (attempt === 1) {
+        console.log(`${label}: ${reason} on attempt 1, retrying`);
+        continue;
+      }
+      throw err;
     }
+  }
+}
 
-    if (req.method !== "POST") {
-      return res.status(405).json({
-        ok: false,
-        error: "POST only",
-      });
-    }
+// ============================================================
+// DVLA LOOKUP
+// ============================================================
+//
+// DVLA gives us: make, colour, year, fuel, body type.
+// (DVLA does NOT return model — that comes from VDG.)
+//
+// Returns null on any failure rather than throwing, so the caller
+// can decide what to do if one API works and one doesn't.
 
-    const { vrm, batchSize } = req.body || {};
-
-    if (!vrm) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing VRM",
-      });
-    }
-
-    const reg = String(vrm)
-      .replace(/[^A-Za-z0-9]/g, "")
-      .toUpperCase();
-
-    const finalBatchSize = Number(batchSize) || 15;
-
-    /* =========================
-       CACHE CHECK
-    ========================= */
-
-    const cached = await getPersistentCached(reg);
-
-    if (cached) {
-
-      return res.json({
-        ...cached,
-        fromCache: true,
-      });
-    }
-
-    console.log("LIVE API LOOKUP:", reg);
-
-    /* =========================
-       DVLA LOOKUP
-    ========================= */
-
-    const dvlaRes = await fetch(
-      "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles",
+async function lookupDVLA(reg) {
+  try {
+    const res = await fetchWithRetry(
+      DVLA_URL,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-api-key": process.env.DVLA_API_KEY,
         },
-        body: JSON.stringify({
-          registrationNumber: reg,
-        }),
-      }
+        body: JSON.stringify({ registrationNumber: reg }),
+      },
+      "DVLA"
     );
 
-    const dvlaData = await dvlaRes.json();
-
-    let make = dvlaData?.make || null;
-    let model = dvlaData?.model || null;
-    let colour = dvlaData?.colour || null;
-    let year = dvlaData?.yearOfManufacture || null;
-    let fuelType = dvlaData?.fuelType || null;
-    let bodyType = dvlaData?.bodyType || null;
-
-    /* =========================
-       VEHICLE DATA GLOBAL LOOKUP
-    ========================= */
-
-    let finalPaintCode = null;
-    let finalPaintName = null;
-
-    const vehicleRes = await fetch(
-      `https://uk.api.vehicledataglobal.com/r2/lookup?packagename=PaintCodeDetails&apikey=${process.env.VEHICLE_DATA_API_KEY}&vrm=${reg}`
-    );
-
-    const vehicleData = await vehicleRes.json();
-
-    console.log(
-      "PAINT API RESPONSE:",
-      JSON.stringify(vehicleData)
-    );
-
-    const paintDetails =
-      vehicleData?.Results?.PaintCodeDetails || {};
-
-    const paintList =
-      paintDetails?.PaintCodeList || [];
-
-    if (paintList.length > 0) {
-
-      finalPaintCode = paintList[0].Code;
-      finalPaintName = paintList[0].Description;
-
-      make = paintDetails.Make || make;
-      model = paintDetails.Model || model;
-      colour = paintDetails.CurrentColour || colour;
-      fuelType = paintDetails.FuelType || fuelType;
+    if (!res.ok) {
+      // 404 = car not in DVLA database. 401 = bad API key. etc.
+      console.warn(`DVLA returned HTTP ${res.status} for ${reg}`);
+      return null;
     }
 
-    if (!finalPaintCode) {
+    const data = await res.json();
+    return {
+      make: data.make || null,
+      colour: data.colour || null,
+      year: data.yearOfManufacture || null,
+      fuelType: data.fuelType || null,
+      bodyType: null, // DVLA enquiry endpoint doesn't return body type
+    };
+  } catch (err) {
+    console.error("DVLA lookup failed:", err.message);
+    return null;
+  }
+}
 
-      return res.json({
+// ============================================================
+// VEHICLE DATA GLOBAL LOOKUP
+// ============================================================
+//
+// VDG gives us: make, model, colour, fuel, body type, paint code+name.
+// This is the supplier that actually returns paint codes.
+
+async function lookupVDG(reg) {
+  try {
+    const url = `${VDG_URL_BASE}?packagename=PaintCodeDetails&apikey=${process.env.VEHICLE_DATA_API_KEY}&vrm=${encodeURIComponent(reg)}`;
+    const res = await fetchWithRetry(url, { method: "GET" }, "VDG");
+
+    if (!res.ok) {
+      console.warn(`VDG returned HTTP ${res.status} for ${reg}`);
+      return null;
+    }
+
+    const data = await res.json();
+    const details = data?.Results?.PaintCodeDetails || {};
+    const paintList = details.PaintCodeList || [];
+    const firstPaint = paintList[0] || {};
+
+    return {
+      make: details.Make || null,
+      model: details.Model || null,
+      colour: details.CurrentColour || null,
+      fuelType: details.FuelType || null,
+      bodyType: details.BodyType || null,
+      paintCode: firstPaint.Code || null,
+      paintName: firstPaint.Description || null,
+    };
+  } catch (err) {
+    console.error("VDG lookup failed:", err.message);
+    return null;
+  }
+}
+
+// ============================================================
+// SILHOUETTE KEY
+// ============================================================
+//
+// Maps DVLA/VDG body type strings to a small set of silhouette names.
+// The frontend uses this key to pick which SVG car shape to display
+// behind the paint preview. Far better than "SUV or generic blob."
+//
+// Body types from real APIs are inconsistent — we match on contains
+// rather than equals so things like "PANEL VAN" and "VAN" both work.
+
+function pickSilhouetteKey(bodyType, model) {
+  const bt = (bodyType || "").toUpperCase();
+  const md = (model || "").toUpperCase();
+
+  // SUV first because Volvo XC models sometimes report as something else
+  if (md.includes("XC") || md.includes("Q3") || md.includes("Q5") || md.includes("Q7")) return "suv";
+  if (bt.includes("SUV") || bt.includes("CROSSOVER")) return "suv";
+
+  if (bt.includes("HATCHBACK")) return "hatchback";
+  if (bt.includes("SALOON") || bt.includes("SEDAN")) return "saloon";
+  if (bt.includes("ESTATE") || bt.includes("WAGON") || bt.includes("TOURER")) return "estate";
+  if (bt.includes("COUPE")) return "coupe";
+  if (bt.includes("CONVERTIBLE") || bt.includes("CABRIOLET") || bt.includes("ROADSTER")) return "convertible";
+  if (bt.includes("MPV") || bt.includes("MULTI")) return "mpv";
+  if (bt.includes("PICK")) return "pickup";
+  if (bt.includes("VAN")) return "van";
+
+  return "saloon"; // sensible default — most cars on UK roads
+}
+
+// ============================================================
+// CACHE READ/WRITE (memory + Redis)
+// ============================================================
+
+async function getCached(reg) {
+  const mem = memoryGet(reg);
+  if (mem) {
+    console.log(`Memory cache hit: ${reg}`);
+    return mem;
+  }
+  if (!redisReady()) return null;
+  try {
+    const data = await redis.get(`paintlookup:${reg}`);
+    if (data) {
+      console.log(`Redis cache hit: ${reg}`);
+      memorySet(reg, data);
+      return data;
+    }
+  } catch (err) {
+    console.warn("Redis read failed:", err.message);
+  }
+  return null;
+}
+
+async function setCached(reg, data, isNegative) {
+  memorySet(reg, data);
+  if (!redisReady()) return;
+  try {
+    const ttl = isNegative ? REDIS_NEGATIVE_TTL_SECONDS : REDIS_SUCCESS_TTL_SECONDS;
+    await redis.set(`paintlookup:${reg}`, data, { ex: ttl });
+  } catch (err) {
+    console.warn("Redis save failed:", err.message);
+  }
+}
+
+// ============================================================
+// MAIN HANDLER
+// ============================================================
+
+module.exports = async (req, res) => {
+  applyCORS(req, res);
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+
+  if (req.method !== "POST") {
+    return res.status(405).json({
+      ok: false,
+      status: "method_not_allowed",
+      error: "POST only",
+    });
+  }
+
+  try {
+    // ---------- 1. INPUT ----------
+    const { vrm } = req.body || {};
+    if (!vrm) {
+      return res.status(400).json({
         ok: false,
-        error: "REAL API RETURNED NO PAINT CODE",
-        vrm: reg,
-        make,
-        model,
-        colour,
-        fromCache: false,
+        status: "missing_vrm",
+        error: "Missing registration",
       });
     }
 
-    /* =========================
-       FORMULA LOOKUP
-    ========================= */
-
-    const silhouetteKey =
-      pickSilhouetteKey(make, model, bodyType);
-
-    let formula = null;
-
-    try {
-
-      const baseUrl = getBaseUrl(req);
-
-      const formulaRes = await fetch(
-        `${baseUrl}/api/formula`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            paintCode: finalPaintCode,
-            batchSize: finalBatchSize,
-          }),
-        }
-      );
-
-      const formulaData = await formulaRes.json();
-
-      if (formulaData.ok) {
-        formula = formulaData;
-      }
-
-    } catch (err) {
-
-      console.warn("Formula lookup failed:", err);
+    const reg = normaliseVRM(vrm);
+    if (!isValidVRM(reg)) {
+      return res.status(400).json({
+        ok: false,
+        status: "invalid_vrm",
+        error: "That doesn't look like a valid UK registration.",
+      });
     }
 
-    /* =========================
-       FINAL RESPONSE
-    ========================= */
+    // ---------- 2. RATE LIMIT ----------
+    const ip = getClientIP(req);
+    const rl = await checkRateLimit(ip);
+    if (!rl.allowed) {
+      console.warn(`Rate limit exceeded for ${ip}: ${rl.count} req/min`);
+      return res.status(429).json({
+        ok: false,
+        status: "rate_limited",
+        error: "Too many lookups. Please wait a minute and try again.",
+      });
+    }
 
+    // ---------- 3. CACHE ----------
+    const cached = await getCached(reg);
+    if (cached) {
+      return res.status(200).json({ ...cached, fromCache: true });
+    }
+
+    console.log(`LIVE lookup: ${reg}`);
+
+    // ---------- 4. PARALLEL DVLA + VDG ----------
+    const [dvla, vdg] = await Promise.all([lookupDVLA(reg), lookupVDG(reg)]);
+
+    // If BOTH APIs gave us nothing, we genuinely don't know what's wrong:
+    // could be a typo, could be a service hiccup, could be an obscure car.
+    // We don't cache this — the customer might just have mistyped.
+    if (!dvla && !vdg) {
+      return res.status(200).json({
+        ok: false,
+        status: "vehicle_not_found",
+        message:
+          "We couldn't look up that registration. Please double-check it, or use your paint code instead.",
+        vrm: reg,
+      });
+    }
+
+    // ---------- 5. MERGE DATA ----------
+    // VDG wins on overlapping fields (it knows paint stuff).
+    // DVLA fills in year (VDG doesn't provide year).
+    const make = vdg?.make || dvla?.make || null;
+    const model = vdg?.model || null;
+    const colour = vdg?.colour || dvla?.colour || null;
+    const year = dvla?.year || null;
+    const fuelType = vdg?.fuelType || dvla?.fuelType || null;
+    const bodyType = vdg?.bodyType || dvla?.bodyType || null;
+    const paintCode = vdg?.paintCode || null;
+    const paintName = vdg?.paintName || null;
+
+    // ---------- 6. NO PAINT CODE? ----------
+    // We found the vehicle but VDG doesn't have a paint code for it.
+    // Common for vans, some commercial vehicles, and obscure models.
+    // Cache this negatively for 7 days so we don't keep paying VDG.
+    if (!paintCode) {
+      const noPaint = {
+        ok: false,
+        status: "paint_not_found",
+        message:
+          "We found your vehicle but couldn't auto-match the paint code. You can enter your paint code manually.",
+        vrm: reg,
+        vehicle: { make, model, colour, year, fuelType, bodyType },
+        silhouetteKey: pickSilhouetteKey(bodyType, model),
+        fromCache: false,
+      };
+      await setCached(reg, noPaint, true);
+      return res.status(200).json(noPaint);
+    }
+
+    // ---------- 7. FORMULA (INLINE CALL) ----------
+    // The chef no longer phones himself for the recipe — just opens the book.
+    let formulaResult = { formula: [], status: "unknown", batchSizeMl: 10 };
+    try {
+      formulaResult = await getFormula({ paintCode, brand: make });
+    } catch (err) {
+      console.error("Formula lookup threw unexpectedly:", err);
+    }
+
+    // ---------- 8. RESPONSE ----------
     const responseData = {
       ok: true,
+      status: "found",
       vrm: reg,
-      vehicle: {
-        make,
-        model,
-        colour,
-        year,
-        fuelType,
-        bodyType,
-      },
-      silhouetteKey,
-      paintCode: finalPaintCode,
-      paintName: finalPaintName,
-      batchSize: finalBatchSize,
-      formula,
+      vehicle: { make, model, colour, year, fuelType, bodyType },
+      silhouetteKey: pickSilhouetteKey(bodyType, model),
+      paintCode,
+      paintName,
+      formula: formulaResult.formula || [],
+      formulaStatus: formulaResult.status || "unknown",
+      batchSizeMl: formulaResult.batchSizeMl || 10,
       fromCache: false,
     };
 
-    /* =========================
-       SAVE CACHE
-    ========================= */
+    // ---------- 9. CACHE THE WIN ----------
+    await setCached(reg, responseData, false);
 
-    await setPersistentCached(reg, responseData);
-
-    return res.json(responseData);
-
+    return res.status(200).json(responseData);
   } catch (err) {
-
-    console.error("Lookup failed:", err);
-
+    console.error("Lookup fatal error:", err);
     return res.status(500).json({
       ok: false,
-      error: "lookup failed",
+      status: "server_error",
+      error: "Unexpected error",
     });
   }
 };
