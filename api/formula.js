@@ -73,6 +73,14 @@ const ALLOWED_ORIGINS = [
   "https://manage.wix.com",
 ];
 
+// Wix HTML embed iframes are served from sandboxed subdomains like
+// *.filesusr.com — we accept those by pattern rather than hardcoding.
+const WIX_ORIGIN_SUFFIXES = [
+  ".filesusr.com",
+  ".wixsite.com",
+  ".wix.com",
+];
+
 // ============================================================
 // IN-MEMORY CACHE (per-function-instance only)
 // ============================================================
@@ -346,14 +354,24 @@ async function getFormula({ paintCode, brand, make }) {
 // HTTP HANDLER (the public /api/formula endpoint)
 // ============================================================
 
+function isOriginAllowed(origin) {
+  if (!origin) return false;
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  for (const suffix of WIX_ORIGIN_SUFFIXES) {
+    if (origin.endsWith(suffix)) return true;
+  }
+  return false;
+}
+
 module.exports = async (req, res) => {
-  // CORS — only allow our own domains
+  // CORS — accept our domains and Wix-hosted iframe subdomains
   const origin = req.headers.origin || "";
-  if (ALLOWED_ORIGINS.includes(origin)) {
+  if (isOriginAllowed(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Max-Age", "3600");
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") {
