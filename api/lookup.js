@@ -306,6 +306,73 @@ async function lookupVDG(reg) {
 }
 
 // ============================================================
+// VEHICLE IMAGE LOOKUP (VDG — Vehicle Image Details package)
+// ============================================================
+//
+// Adds an actual photo of the customer's car to the response.
+// Costs ~£0.01–£0.02 per call. Defensive parsing because VDG's
+// response shape for this package isn't fully documented — we
+// try several likely structures and log what we got.
+//
+// Returns: image URL string, or null if no image / failure.
+
+async function lookupVDGImage(reg) {
+  try {
+    const url = `${VDG_URL_BASE}?packagename=VehicleImageDetails&apikey=${process.env.VEHICLE_DATA_API_KEY}&vrm=${encodeURIComponent(reg)}`;
+    const res = await fetchWithRetry(url, { method: "GET" }, "VDG-Image");
+
+    if (!res.ok) {
+      console.warn(`VDG-Image returned HTTP ${res.status} for ${reg}`);
+      return null;
+    }
+
+    const data = await res.json();
+
+    // Try multiple known/guessed shapes — log structure so we can adjust
+    // once we see real data come back from the API.
+    const details =
+      data?.Results?.VehicleImageDetails ||
+      data?.Results?.ImageDetails ||
+      data?.Results ||
+      {};
+
+    const imageList =
+      details.ImageDetailsList ||
+      details.VehicleImageList ||
+      details.ImageList ||
+      details.Images ||
+      [];
+
+    const first = imageList[0] || {};
+
+    const imageUrl =
+      first.ImageUrl ||
+      first.Url ||
+      first.URL ||
+      first.Src ||
+      details.PrimaryImageUrl ||
+      details.ImageUrl ||
+      details.Url ||
+      null;
+
+    if (!imageUrl) {
+      console.log(
+        `VDG-Image: no image URL extracted for ${reg}. ` +
+        `Top-level keys: ${JSON.stringify(Object.keys(data?.Results || {}))}. ` +
+        `Details keys: ${JSON.stringify(Object.keys(details))}`
+      );
+      return null;
+    }
+
+    console.log(`VDG-Image: found image for ${reg}`);
+    return imageUrl;
+  } catch (err) {
+    console.error("VDG-Image lookup failed:", err.message);
+    return null;
+  }
+}
+
+// ============================================================
 // SILHOUETTE KEY
 // ============================================================
 //
@@ -348,7 +415,7 @@ async function getCached(reg) {
   }
   if (!redisReady()) return null;
   try {
-    const data = await redis.get(`paintlookup_v2:${reg}`);
+    const data = await redis.get(`paintlookup_v3:${reg}`);
     if (data) {
       console.log(`Redis cache hit: ${reg}`);
       memorySet(reg, data);
@@ -365,7 +432,7 @@ async function setCached(reg, data, isNegative) {
   if (!redisReady()) return;
   try {
     const ttl = isNegative ? REDIS_NEGATIVE_TTL_SECONDS : REDIS_SUCCESS_TTL_SECONDS;
-    await redis.set(`paintlookup_v2:${reg}`, data, { ex: ttl });
+    await redis.set(`paintlookup_v3:${reg}`, data, { ex: ttl });
   } catch (err) {
     console.warn("Redis save failed:", err.message);
   }
@@ -428,8 +495,13 @@ module.exports = async (req, res) => {
 
     console.log(`LIVE lookup: ${reg}`);
 
-    // ---------- 4. PARALLEL DVLA + VDG ----------
-    const [dvla, vdg] = await Promise.all([lookupDVLA(reg), lookupVDG(reg)]);
+    // ---------- 4. PARALLEL DVLA + VDG (paint) + VDG (image) ----------
+    // All three fired together — total wait is whichever is slowest.
+    const [dvla, vdg, imageUrl] = await Promise.all([
+      lookupDVLA(reg),
+      lookupVDG(reg),
+      lookupVDGImage(reg),
+    ]);
 
     // If BOTH APIs gave us nothing, we genuinely don't know what's wrong:
     // could be a typo, could be a service hiccup, could be an obscure car.
@@ -488,6 +560,7 @@ module.exports = async (req, res) => {
         vrm: reg,
         vehicle: { make, model, colour, year, fuelType, bodyType },
         silhouetteKey: pickSilhouetteKey(bodyType, model),
+        imageUrl: imageUrl || null, // we still have an image even if no paint
         fromCache: false,
       };
       await setCached(reg, noPaint, true);
@@ -510,6 +583,7 @@ module.exports = async (req, res) => {
       vrm: reg,
       vehicle: { make, model, colour, year, fuelType, bodyType },
       silhouetteKey: pickSilhouetteKey(bodyType, model),
+      imageUrl: imageUrl || null, // photo of the customer's actual car
       paintCode,
       paintName,
       formula: formulaResult.formula || [],
