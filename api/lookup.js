@@ -64,7 +64,12 @@ const WIX_ORIGIN_SUFFIXES = [
   ".wix.com",
 ];
 
-const API_TIMEOUT_MS = 6000;                            // 6 seconds per API
+// 10 seconds per API. Bumped from 6s after we saw a string of legitimate
+// VDG calls getting aborted on slow mornings. With one auto-retry on top
+// (see fetchWithRetry below), the absolute worst case is ~20s before we
+// give up on either API — but Promise.all means the customer waits the
+// slowest of DVLA / VDG / VDG-Image, not the sum.
+const API_TIMEOUT_MS = 10000;
 const MEMORY_CACHE_TTL_MS = 60 * 60 * 1000;             // 1 hour
 const REDIS_SUCCESS_TTL_SECONDS = 60 * 60 * 24 * 365;   // 1 year
 const REDIS_NEGATIVE_TTL_SECONDS = 60 * 60 * 24 * 7;    // 7 days
@@ -318,7 +323,15 @@ async function lookupVDG(reg) {
 
 async function lookupVDGImage(reg) {
   try {
-    const url = `${VDG_URL_BASE}?packagename=VehicleImageDetails&apikey=${process.env.VEHICLE_DATA_API_KEY}&vrm=${encodeURIComponent(reg)}`;
+    // VDG's package name for car photos is "VehicleImage" (singular, no
+    // "Details" suffix). Their marketing/pricing material calls it
+    // "Vehicle Image Details" — DON'T trust that. The actual API
+    // package name is just "VehicleImage". Confirmed via Tony's screen
+    // recording of the VDG Quick Lookup dashboard 22 May 2026.
+    // The response is still wrapped in Results.VehicleImageDetails
+    // (yes, naming inconsistency on VDG's side) — our parser below
+    // handles that already.
+    const url = `${VDG_URL_BASE}?packagename=VehicleImage&apikey=${process.env.VEHICLE_DATA_API_KEY}&vrm=${encodeURIComponent(reg)}`;
     const res = await fetchWithRetry(url, { method: "GET" }, "VDG-Image");
 
     if (!res.ok) {
@@ -415,7 +428,7 @@ async function getCached(reg) {
   }
   if (!redisReady()) return null;
   try {
-    const data = await redis.get(`paintlookup_v3:${reg}`);
+    const data = await redis.get(`paintlookup_v4:${reg}`);
     if (data) {
       console.log(`Redis cache hit: ${reg}`);
       memorySet(reg, data);
@@ -432,7 +445,7 @@ async function setCached(reg, data, isNegative) {
   if (!redisReady()) return;
   try {
     const ttl = isNegative ? REDIS_NEGATIVE_TTL_SECONDS : REDIS_SUCCESS_TTL_SECONDS;
-    await redis.set(`paintlookup_v3:${reg}`, data, { ex: ttl });
+    await redis.set(`paintlookup_v4:${reg}`, data, { ex: ttl });
   } catch (err) {
     console.warn("Redis save failed:", err.message);
   }
