@@ -523,14 +523,14 @@ function pickSilhouetteKey(bodyType, model) {
 async function getCached(reg) {
   const mem = memoryGet(reg);
   if (mem) {
-    console.log(`Memory cache hit: ${reg}`);
+    console.log(`Memory cache hit: ${reg} (imageUrl=${mem.imageUrl ? "set" : "null"})`);
     return mem;
   }
   if (!redisReady()) return null;
   try {
-    const data = await redis.get(`paintlookup_v6:${reg}`);
+    const data = await redis.get(`paintlookup_v7:${reg}`);
     if (data) {
-      console.log(`Redis cache hit: ${reg}`);
+      console.log(`Redis cache hit: ${reg} (imageUrl=${data.imageUrl ? "set" : "null"})`);
       memorySet(reg, data);
       return data;
     }
@@ -545,7 +545,8 @@ async function setCached(reg, data, isNegative) {
   if (!redisReady()) return;
   try {
     const ttl = isNegative ? REDIS_NEGATIVE_TTL_SECONDS : REDIS_SUCCESS_TTL_SECONDS;
-    await redis.set(`paintlookup_v6:${reg}`, data, { ex: ttl });
+    console.log(`Caching ${reg} (imageUrl=${data.imageUrl ? "set" : "null"}, isNegative=${isNegative})`);
+    await redis.set(`paintlookup_v7:${reg}`, data, { ex: ttl });
   } catch (err) {
     console.warn("Redis save failed:", err.message);
   }
