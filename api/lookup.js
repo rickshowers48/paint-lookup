@@ -528,7 +528,7 @@ async function getCached(reg) {
   }
   if (!redisReady()) return null;
   try {
-    const data = await redis.get(`paintlookup_v5:${reg}`);
+    const data = await redis.get(`paintlookup_v6:${reg}`);
     if (data) {
       console.log(`Redis cache hit: ${reg}`);
       memorySet(reg, data);
@@ -545,7 +545,7 @@ async function setCached(reg, data, isNegative) {
   if (!redisReady()) return;
   try {
     const ttl = isNegative ? REDIS_NEGATIVE_TTL_SECONDS : REDIS_SUCCESS_TTL_SECONDS;
-    await redis.set(`paintlookup_v5:${reg}`, data, { ex: ttl });
+    await redis.set(`paintlookup_v6:${reg}`, data, { ex: ttl });
   } catch (err) {
     console.warn("Redis save failed:", err.message);
   }
