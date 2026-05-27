@@ -341,8 +341,6 @@ async function lookupVDGImage(reg) {
 
     const data = await res.json();
 
-    // Try multiple known/guessed shapes — log structure so we can adjust
-    // once we see real data come back from the API.
     const details =
       data?.Results?.VehicleImageDetails ||
       data?.Results?.ImageDetails ||
@@ -356,33 +354,113 @@ async function lookupVDGImage(reg) {
       details.Images ||
       [];
 
-    const first = imageList[0] || {};
+    // Return an ARRAY of candidate images with their colour metadata so
+    // the caller can pick the one matching the customer's actual colour.
+    // VDG often returns multiple library photos per vehicle, one per
+    // colour they happen to have on file. Blindly grabbing the first
+    // means we show e.g. a Black Ford to someone who owns a Yellow Ford,
+    // which is the bug that made Rick's friend say he wouldn't have
+    // pressed Order.
+    const candidates = imageList
+      .map((img) => ({
+        url:
+          img.ImageUrl ||
+          img.Url ||
+          img.URL ||
+          img.Src ||
+          null,
+        colourDesc: img.Description || img.Colour || img.ColourDescription || null,
+        colourCode: img.ColourCode || img.ColorCode || null,
+        viewAngle: img.ViewAngle || null,
+      }))
+      .filter((c) => c.url);
 
-    const imageUrl =
-      first.ImageUrl ||
-      first.Url ||
-      first.URL ||
-      first.Src ||
-      details.PrimaryImageUrl ||
-      details.ImageUrl ||
-      details.Url ||
-      null;
-
-    if (!imageUrl) {
+    if (candidates.length === 0) {
       console.log(
-        `VDG-Image: no image URL extracted for ${reg}. ` +
+        `VDG-Image: no usable images for ${reg}. ` +
         `Top-level keys: ${JSON.stringify(Object.keys(data?.Results || {}))}. ` +
         `Details keys: ${JSON.stringify(Object.keys(details))}`
       );
       return null;
     }
 
-    console.log(`VDG-Image: found image for ${reg}`);
-    return imageUrl;
+    console.log(
+      `VDG-Image: ${candidates.length} candidate(s) for ${reg} — ` +
+      `colours: ${candidates.map((c) => c.colourDesc || "?").join(", ")}`
+    );
+    return candidates;
   } catch (err) {
     console.error("VDG-Image lookup failed:", err.message);
     return null;
   }
+}
+
+// ============================================================
+// COLOUR MATCH — pick the VDG image that matches customer colour
+// ============================================================
+//
+// VDG returns library photos in whatever colours they happen to have.
+// We compare each image's colour description against the customer's
+// actual colour (from DVLA + VDG paint). If we find a match, we use
+// that image. If we don't, we return null — better to show NO image
+// than a misleading one in the wrong colour.
+//
+// "Match" means sharing a meaningful colour word — "Denim Blue" matches
+// "Blue", "Cosmos Black" matches "Black", "Signal Red Metallic" matches
+// "Red". Generic non-colour words like "Metallic", "Pearl", "Pure" are
+// ignored.
+
+const COLOUR_NOISE_WORDS = new Set([
+  "metallic", "pearl", "pearlescent", "matte", "matt", "gloss", "satin",
+  "premium", "solid", "effect", "mica", "tinted", "deep", "light", "dark",
+  "the", "of", "and", "with", "a", "an", "ii", "iii", "iv",
+]);
+
+function colourWords(s) {
+  return String(s || "")
+    .toLowerCase()
+    .split(/[\s\-_/\\,()]+/)
+    .filter(Boolean)
+    .filter((w) => w.length >= 3 && !COLOUR_NOISE_WORDS.has(w));
+}
+
+function coloursMatch(customerColour, imageColour) {
+  if (!customerColour || !imageColour) return false;
+  const a = new Set(colourWords(customerColour));
+  const b = new Set(colourWords(imageColour));
+  for (const word of a) {
+    if (b.has(word)) return true;
+  }
+  return false;
+}
+
+function pickBestImage(candidates, customerColour, customerPaintName, reg) {
+  if (!candidates || candidates.length === 0) return null;
+
+  // We try matching against the simple DVLA-style colour first ("BLUE",
+  // "RED"), then fall back to the more specific paint name from VDG
+  // ("Denim Blue", "Signal Red Metallic") — sometimes one matches when
+  // the other doesn't.
+  const colourSources = [customerColour, customerPaintName].filter(Boolean);
+
+  for (const source of colourSources) {
+    for (const c of candidates) {
+      if (coloursMatch(source, c.colourDesc)) {
+        console.log(
+          `VDG-Image: matched ${reg} customer="${source}" → image="${c.colourDesc}"`
+        );
+        return c.url;
+      }
+    }
+  }
+
+  console.log(
+    `VDG-Image: NO COLOUR MATCH for ${reg}. ` +
+    `Customer colour="${customerColour}" / paint="${customerPaintName}". ` +
+    `Available image colours: ${candidates.map((c) => c.colourDesc || "?").join(", ")}. ` +
+    `Hiding image to avoid showing wrong colour.`
+  );
+  return null;
 }
 
 // ============================================================
@@ -428,7 +506,7 @@ async function getCached(reg) {
   }
   if (!redisReady()) return null;
   try {
-    const data = await redis.get(`paintlookup_v4:${reg}`);
+    const data = await redis.get(`paintlookup_v5:${reg}`);
     if (data) {
       console.log(`Redis cache hit: ${reg}`);
       memorySet(reg, data);
@@ -445,7 +523,7 @@ async function setCached(reg, data, isNegative) {
   if (!redisReady()) return;
   try {
     const ttl = isNegative ? REDIS_NEGATIVE_TTL_SECONDS : REDIS_SUCCESS_TTL_SECONDS;
-    await redis.set(`paintlookup_v4:${reg}`, data, { ex: ttl });
+    await redis.set(`paintlookup_v5:${reg}`, data, { ex: ttl });
   } catch (err) {
     console.warn("Redis save failed:", err.message);
   }
@@ -510,7 +588,10 @@ module.exports = async (req, res) => {
 
     // ---------- 4. PARALLEL DVLA + VDG (paint) + VDG (image) ----------
     // All three fired together — total wait is whichever is slowest.
-    const [dvla, vdg, imageUrl] = await Promise.all([
+    // Note: lookupVDGImage now returns an ARRAY of candidate images (not
+    // a single URL) so we can filter by colour AFTER we know the
+    // customer's actual paint colour from the other two calls.
+    const [dvla, vdg, imageCandidates] = await Promise.all([
       lookupDVLA(reg),
       lookupVDG(reg),
       lookupVDGImage(reg),
@@ -540,6 +621,14 @@ module.exports = async (req, res) => {
     const bodyType = vdg?.bodyType || dvla?.bodyType || null;
     const paintCode = vdg?.paintCode || null;
     const paintName = vdg?.paintName || null;
+
+    // ---------- 5b. PICK A COLOUR-MATCHING IMAGE ----------
+    // Now that we know the customer's actual colour, filter VDG's image
+    // candidates and pick one whose Description matches. If no image
+    // matches the colour, we return null — the frontend will fall back
+    // to a body-type silhouette filled with the customer's actual paint
+    // colour, which is always right by construction.
+    const imageUrl = pickBestImage(imageCandidates, colour, paintName, reg);
 
     // ---------- 6. NO PAINT CODE? ----------
     // Two very different reasons we get here, must not be conflated:
