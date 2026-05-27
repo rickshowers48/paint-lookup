@@ -437,28 +437,50 @@ function coloursMatch(customerColour, imageColour) {
 function pickBestImage(candidates, customerColour, customerPaintName, reg) {
   if (!candidates || candidates.length === 0) return null;
 
-  // We try matching against the simple DVLA-style colour first ("BLUE",
-  // "RED"), then fall back to the more specific paint name from VDG
-  // ("Denim Blue", "Signal Red Metallic") — sometimes one matches when
-  // the other doesn't.
-  const colourSources = [customerColour, customerPaintName].filter(Boolean);
+  // STRICT MATCHING (post-BU23CRK incident, 27 May 2026):
+  // The friend's Volvo Nebula came back as "Light Green" from VDG and
+  // the customer-perceived colour was a pale grey-green-pearl. DVLA
+  // happened to classify the car as "Green" and our old code matched
+  // on the shared word "green", showing a vivid neon-green stock photo.
+  // The friend said he wouldn't have pressed Order.
+  //
+  // New rule: when we have a specific paint name (like "Nebula"), we
+  // REQUIRE both the paint name AND the customer colour to share a
+  // meaningful colour word with the image's Description. "Nebula" does
+  // not share a colour word with "Light Green" — so we hide, even if
+  // "Green" does match. Reduces false positives at the cost of more
+  // false negatives, which the silhouette fallback will cover.
+  //
+  // When we DON'T have a paint name (paint_not_found path), we fall
+  // back to just matching against the customer colour — less reliable
+  // but the best signal available in that case.
+  const hasPaintName = Boolean(customerPaintName);
 
-  for (const source of colourSources) {
-    for (const c of candidates) {
-      if (coloursMatch(source, c.colourDesc)) {
-        console.log(
-          `VDG-Image: matched ${reg} customer="${source}" → image="${c.colourDesc}"`
-        );
-        return c.url;
-      }
+  for (const c of candidates) {
+    if (!c.colourDesc) continue;
+
+    const colourMatches = customerColour && coloursMatch(customerColour, c.colourDesc);
+    const paintNameMatches = customerPaintName && coloursMatch(customerPaintName, c.colourDesc);
+
+    const isMatch = hasPaintName
+      ? (colourMatches && paintNameMatches)  // both must agree
+      : colourMatches;                       // colour alone if no paint name
+
+    if (isMatch) {
+      console.log(
+        `VDG-Image: matched ${reg} ` +
+        `customer="${customerColour}" paint="${customerPaintName || "(none)"}" ` +
+        `→ image="${c.colourDesc}"`
+      );
+      return c.url;
     }
   }
 
   console.log(
-    `VDG-Image: NO COLOUR MATCH for ${reg}. ` +
-    `Customer colour="${customerColour}" / paint="${customerPaintName}". ` +
+    `VDG-Image: NO MATCH for ${reg}. ` +
+    `Customer colour="${customerColour}" paint="${customerPaintName || "(none)"}". ` +
     `Available image colours: ${candidates.map((c) => c.colourDesc || "?").join(", ")}. ` +
-    `Hiding image to avoid showing wrong colour.`
+    `Hiding image — silhouette fallback should kick in on the frontend.`
   );
   return null;
 }
