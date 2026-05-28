@@ -295,6 +295,15 @@ async function lookupVDG(reg) {
     const paintList = details.PaintCodeList || [];
     const firstPaint = paintList[0] || {};
 
+    // DEBUG: dump the full paint object so we can see which fields VDG
+    // actually returns. We're particularly interested in whether there's
+    // a HexCode / ColourCode / RGB field per paint code — if so, we can
+    // colour our swatches exactly per paint code instead of falling back
+    // to a generic name-to-hex lookup.
+    console.log(
+      `VDG paint detail for ${reg}: ${JSON.stringify(firstPaint)}`
+    );
+
     return {
       make: details.Make || null,
       model: details.Model || null,
@@ -303,6 +312,16 @@ async function lookupVDG(reg) {
       bodyType: details.BodyType || null,
       paintCode: firstPaint.Code || null,
       paintName: firstPaint.Description || null,
+      // Try common field name variants for a paint-specific hex code.
+      // If VDG doesn't provide one, this stays null and we fall back
+      // to the widget's name-to-hex palette.
+      paintHex:
+        firstPaint.HexCode ||
+        firstPaint.Hex ||
+        firstPaint.ColourCode ||
+        firstPaint.ColorCode ||
+        firstPaint.RGB ||
+        null,
     };
   } catch (err) {
     console.error("VDG lookup failed:", err.message);
@@ -528,7 +547,7 @@ async function getCached(reg) {
   }
   if (!redisReady()) return null;
   try {
-    const data = await redis.get(`paintlookup_v7:${reg}`);
+    const data = await redis.get(`paintlookup_v8:${reg}`);
     if (data) {
       console.log(`Redis cache hit: ${reg} (imageUrl=${data.imageUrl ? "set" : "null"})`);
       memorySet(reg, data);
@@ -546,7 +565,7 @@ async function setCached(reg, data, isNegative) {
   try {
     const ttl = isNegative ? REDIS_NEGATIVE_TTL_SECONDS : REDIS_SUCCESS_TTL_SECONDS;
     console.log(`Caching ${reg} (imageUrl=${data.imageUrl ? "set" : "null"}, isNegative=${isNegative})`);
-    await redis.set(`paintlookup_v7:${reg}`, data, { ex: ttl });
+    await redis.set(`paintlookup_v8:${reg}`, data, { ex: ttl });
   } catch (err) {
     console.warn("Redis save failed:", err.message);
   }
@@ -644,6 +663,11 @@ module.exports = async (req, res) => {
     const bodyType = vdg?.bodyType || dvla?.bodyType || null;
     const paintCode = vdg?.paintCode || null;
     const paintName = vdg?.paintName || null;
+    // paintHex will be null for now (VDG probably doesn't return it).
+    // The widget's name-to-hex palette is the fallback. Once Rick adds
+    // hex codes to his Google Sheets formula database, formula.js will
+    // surface them and the swatch will be exact per paint code.
+    const paintHex = vdg?.paintHex || null;
 
     // ---------- 5b. PICK A COLOUR-MATCHING IMAGE ----------
     // Now that we know the customer's actual colour, filter VDG's image
@@ -711,6 +735,7 @@ module.exports = async (req, res) => {
       imageUrl: imageUrl || null, // photo of the customer's actual car
       paintCode,
       paintName,
+      paintHex,                    // exact hex when VDG/formula provides it
       formula: formulaResult.formula || [],
       formulaStatus: formulaResult.status || "unknown",
       batchSizeMl: formulaResult.batchSizeMl || 10,
