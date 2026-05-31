@@ -547,7 +547,7 @@ async function getCached(reg) {
   }
   if (!redisReady()) return null;
   try {
-    const data = await redis.get(`paintlookup_v8:${reg}`);
+    const data = await redis.get(`paintlookup_v9:${reg}`);
     if (data) {
       console.log(`Redis cache hit: ${reg} (imageUrl=${data.imageUrl ? "set" : "null"})`);
       memorySet(reg, data);
@@ -565,7 +565,7 @@ async function setCached(reg, data, isNegative) {
   try {
     const ttl = isNegative ? REDIS_NEGATIVE_TTL_SECONDS : REDIS_SUCCESS_TTL_SECONDS;
     console.log(`Caching ${reg} (imageUrl=${data.imageUrl ? "set" : "null"}, isNegative=${isNegative})`);
-    await redis.set(`paintlookup_v8:${reg}`, data, { ex: ttl });
+    await redis.set(`paintlookup_v9:${reg}`, data, { ex: ttl });
   } catch (err) {
     console.warn("Redis save failed:", err.message);
   }
@@ -628,16 +628,17 @@ module.exports = async (req, res) => {
 
     console.log(`LIVE lookup: ${reg}`);
 
-    // ---------- 4. PARALLEL DVLA + VDG (paint) + VDG (image) ----------
-    // All three fired together — total wait is whichever is slowest.
-    // Note: lookupVDGImage now returns an ARRAY of candidate images (not
-    // a single URL) so we can filter by colour AFTER we know the
-    // customer's actual paint colour from the other two calls.
-    const [dvla, vdg, imageCandidates] = await Promise.all([
+    // ---------- 4. PARALLEL DVLA + VDG (paint) ----------
+    // Used to also fire lookupVDGImage(reg) in parallel here — dropped
+    // 30 May 2026 because Rick chose to use body-type silhouettes for
+    // EVERY result (visual consistency across the brand). VDG-Image
+    // costs ~£0.02 per call so this saves real money. The function is
+    // still defined below in case we change our mind.
+    const [dvla, vdg] = await Promise.all([
       lookupDVLA(reg),
       lookupVDG(reg),
-      lookupVDGImage(reg),
     ]);
+    const imageCandidates = null; // kept as a stub so downstream code unchanged
 
     // If BOTH APIs gave us nothing, we genuinely don't know what's wrong:
     // could be a typo, could be a service hiccup, could be an obscure car.
