@@ -28,6 +28,19 @@
 // grams_per_10ml    — e.g. "1.6"  (required)
 // brand             — e.g. "MERCEDES"  (optional but RECOMMENDED — see below)
 //
+// OPTIONAL EXTRA COLUMNS (added 1 Jun 2026)
+// -----------------------------------------
+// paint_name        — e.g. "Denim Blue"  — surfaced as confirmation
+//                     on the manual /PaintCode entry page so customers
+//                     see "✓ 723 — Denim Blue" when they type a code
+//                     we recognise. If missing, no confirmation shown.
+// hex               — e.g. "#28477A" — exact paint colour. When set,
+//                     used by both home widget and /add-to-cart embed
+//                     to render the silhouette in the customer's
+//                     ACTUAL paint colour, not just the muted-palette
+//                     fallback. Build this column over time using a
+//                     fan deck + colour picker (Mipa-fan-deck plan).
+//
 // WHY THE BRAND COLUMN MATTERS:
 // Mipa paint codes are NOT globally unique. Code 723 means one thing for
 // Mercedes (Cubanitsilber Met) and something totally different for BMW.
@@ -40,6 +53,8 @@
 //   grams_per_10ml | grams | share_g | weight
 //   brand | make | manufacturer
 //   component | raw_material | material
+//   paint_name | name | colour_name | color_name
+//   hex | hexcode | color_hex | colour_hex | rgb
 // ============================================================
 
 const { Redis } = require("@upstash/redis");
@@ -58,7 +73,7 @@ const redis = new Redis({
 // ============================================================
 
 const BATCH_SIZE_ML = 10;                   // Every pen = 10ml. Always.
-const REDIS_CACHE_KEY = "formula:csv:v2";   // Bumped to v2 so old cache is invalidated
+const REDIS_CACHE_KEY = "formula:csv:v3";   // Bumped to v3 — paint_name + hex columns added
 const REDIS_CACHE_TTL_SECONDS = 60 * 5;     // 5 minutes
 const MEMORY_CACHE_TTL_MS = 60 * 1000;      // 1 minute
 const CSV_FETCH_TIMEOUT_MS = 7000;          // Give Google 7s, then give up
@@ -107,6 +122,42 @@ function redisReady() {
     process.env.UPSTASH_REDIS_REST_URL &&
     process.env.UPSTASH_REDIS_REST_TOKEN
   );
+}
+
+// ============================================================
+// HEX NORMALISER
+// ============================================================
+// Accepts a bunch of formats Rick or a fan deck might give us:
+//   #1A2B3C  →  #1A2B3C
+//   1A2B3C   →  #1A2B3C   (no hash)
+//   rgb(26, 43, 60)   →  #1A2B3C  (RGB triple)
+//   "26, 43, 60"     →  #1A2B3C
+// Returns the normalised hex, or empty string if input is unparseable.
+
+function normaliseHex(input) {
+  if (!input) return "";
+  const s = String(input).trim();
+  if (!s) return "";
+
+  // Pure hex (with or without leading #)
+  const hexMatch = s.match(/^#?([0-9a-fA-F]{6})$/);
+  if (hexMatch) return "#" + hexMatch[1].toUpperCase();
+
+  // RGB triple — "rgb(26, 43, 60)" or just "26, 43, 60"
+  const rgbMatch = s.match(/(\d{1,3})\D+(\d{1,3})\D+(\d{1,3})/);
+  if (rgbMatch) {
+    const r = Math.min(255, parseInt(rgbMatch[1], 10));
+    const g = Math.min(255, parseInt(rgbMatch[2], 10));
+    const b = Math.min(255, parseInt(rgbMatch[3], 10));
+    return (
+      "#" +
+      r.toString(16).padStart(2, "0").toUpperCase() +
+      g.toString(16).padStart(2, "0").toUpperCase() +
+      b.toString(16).padStart(2, "0").toUpperCase()
+    );
+  }
+
+  return ""; // unparseable
 }
 
 // ============================================================
@@ -239,6 +290,8 @@ async function loadParsedSheet() {
   const componentIdx = findCol("component", "raw_material", "material");
   const gramsIdx = findCol("grams_per_10ml", "grams", "share_g", "weight");
   const brandIdx = findCol("brand", "make", "manufacturer");
+  const paintNameIdx = findCol("paint_name", "name", "colour_name", "color_name");
+  const hexIdx = findCol("hex", "hexcode", "color_hex", "colour_hex", "rgb");
 
   if (codeIdx === -1 || componentIdx === -1 || gramsIdx === -1) {
     throw new Error(
@@ -248,6 +301,8 @@ async function loadParsedSheet() {
   }
 
   const hasBrandColumn = brandIdx >= 0;
+  const hasPaintNameColumn = paintNameIdx >= 0;
+  const hasHexColumn = hexIdx >= 0;
 
   // Parse data rows into clean objects
   const rows = rawRows
@@ -257,10 +312,17 @@ async function loadParsedSheet() {
       code: String(r[codeIdx] || "").trim().toUpperCase(),
       component: String(r[componentIdx] || "").trim(),
       grams: parseFloat(r[gramsIdx]),
+      paintName: hasPaintNameColumn ? String(r[paintNameIdx] || "").trim() : "",
+      hex: hasHexColumn ? normaliseHex(String(r[hexIdx] || "").trim()) : "",
     }))
     .filter((r) => r.code && r.component && !isNaN(r.grams) && r.grams > 0);
 
-  const result = { rows, hasBrandColumn };
+  const result = {
+    rows,
+    hasBrandColumn,
+    hasPaintNameColumn,
+    hasHexColumn,
+  };
 
   // Save to both caches
   writeMemoryCache(result);
@@ -295,7 +357,17 @@ function findFormula({ rows, hasBrandColumn }, paintCode, brand) {
     matches = rows.filter((r) => r.code === cleanCode);
   }
 
-  return matches.map(({ component, grams }) => ({ component, grams }));
+  // Paint name and hex are per-PAINT (not per-ingredient). All rows for
+  // the same paint will share the same name/hex, so pick from the first
+  // match. Empty strings if the columns aren't populated yet.
+  const paintName = matches.find((r) => r.paintName)?.paintName || "";
+  const hex = matches.find((r) => r.hex)?.hex || "";
+
+  return {
+    components: matches.map(({ component, grams }) => ({ component, grams })),
+    paintName,
+    hex,
+  };
 }
 
 // ============================================================
@@ -326,9 +398,9 @@ async function getFormula({ paintCode, brand, make }) {
     };
   }
 
-  const formula = findFormula(parsed, paintCode, brandInput);
+  const { components, paintName, hex } = findFormula(parsed, paintCode, brandInput);
 
-  if (formula.length === 0) {
+  if (components.length === 0) {
     return {
       ok: true,
       status: "formula_not_available",
@@ -336,6 +408,8 @@ async function getFormula({ paintCode, brand, make }) {
       brand: brandInput.trim().toUpperCase(),
       batchSizeMl: BATCH_SIZE_ML,
       formula: [],
+      paintName: "",  // empty when paint not in DB yet
+      hex: "",
       message: "We don't have this paint formula on file yet.",
     };
   }
@@ -346,7 +420,9 @@ async function getFormula({ paintCode, brand, make }) {
     paintCode: String(paintCode).trim().toUpperCase(),
     brand: brandInput.trim().toUpperCase(),
     batchSizeMl: BATCH_SIZE_ML,
-    formula,
+    formula: components,
+    paintName,
+    hex,
   };
 }
 
