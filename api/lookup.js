@@ -547,7 +547,7 @@ async function getCached(reg) {
   }
   if (!redisReady()) return null;
   try {
-    const data = await redis.get(`paintlookup_v9:${reg}`);
+    const data = await redis.get(`paintlookup_v10:${reg}`);
     if (data) {
       console.log(`Redis cache hit: ${reg} (imageUrl=${data.imageUrl ? "set" : "null"})`);
       memorySet(reg, data);
@@ -565,7 +565,7 @@ async function setCached(reg, data, isNegative) {
   try {
     const ttl = isNegative ? REDIS_NEGATIVE_TTL_SECONDS : REDIS_SUCCESS_TTL_SECONDS;
     console.log(`Caching ${reg} (imageUrl=${data.imageUrl ? "set" : "null"}, isNegative=${isNegative})`);
-    await redis.set(`paintlookup_v9:${reg}`, data, { ex: ttl });
+    await redis.set(`paintlookup_v10:${reg}`, data, { ex: ttl });
   } catch (err) {
     console.warn("Redis save failed:", err.message);
   }
@@ -719,12 +719,21 @@ module.exports = async (req, res) => {
 
     // ---------- 7. FORMULA (INLINE CALL) ----------
     // The chef no longer phones himself for the recipe — just opens the book.
-    let formulaResult = { formula: [], status: "unknown", batchSizeMl: 10 };
+    let formulaResult = { formula: [], status: "unknown", batchSizeMl: 10, paintName: "", hex: "" };
     try {
       formulaResult = await getFormula({ paintCode, brand: make });
     } catch (err) {
       console.error("Formula lookup threw unexpectedly:", err);
     }
+
+    // Hex priority: VDG (almost never has it) → formula sheet hex column
+    // → null. The formula sheet hex grows over time as Rick adds paints,
+    // so this gets better as the database grows.
+    const finalHex = paintHex || formulaResult.hex || null;
+    // Paint name priority: VDG (usually has this) → formula sheet name
+    // → whatever we already have. VDG wins because for reg lookups it's
+    // always present and authoritative.
+    const finalPaintName = paintName || formulaResult.paintName || null;
 
     // ---------- 8. RESPONSE ----------
     const responseData = {
@@ -735,8 +744,8 @@ module.exports = async (req, res) => {
       silhouetteKey: pickSilhouetteKey(bodyType, model),
       imageUrl: imageUrl || null, // photo of the customer's actual car
       paintCode,
-      paintName,
-      paintHex,                    // exact hex when VDG/formula provides it
+      paintName: finalPaintName,
+      paintHex: finalHex,         // exact hex from formula sheet when set
       formula: formulaResult.formula || [],
       formulaStatus: formulaResult.status || "unknown",
       batchSizeMl: formulaResult.batchSizeMl || 10,
