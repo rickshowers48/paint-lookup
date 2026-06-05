@@ -73,7 +73,7 @@ const redis = new Redis({
 // ============================================================
 
 const BATCH_SIZE_ML = 10;                   // Every pen = 10ml. Always.
-const REDIS_CACHE_KEY = "formula:csv:v3";   // Bumped to v3 — paint_name + hex columns added
+const REDIS_CACHE_KEY = "formula:csv:v5";   // Bumped to v5 — force-bust stale cache after sheet edits
 const REDIS_CACHE_TTL_SECONDS = 60 * 5;     // 5 minutes
 const MEMORY_CACHE_TTL_MS = 60 * 1000;      // 1 minute
 const CSV_FETCH_TIMEOUT_MS = 7000;          // Give Google 7s, then give up
@@ -304,7 +304,14 @@ async function loadParsedSheet() {
   const hasPaintNameColumn = paintNameIdx >= 0;
   const hasHexColumn = hexIdx >= 0;
 
-  // Parse data rows into clean objects
+  // Parse data rows into clean objects.
+  //
+  // NOTE on filtering: rows are kept if they have a paint code AND
+  // EITHER (a) a valid recipe ingredient (component + grams) OR (b)
+  // a paint_name set. This lets the sheet hold "name only" entries
+  // for paint codes Rick hasn't mixed yet — they still power the
+  // /PaintCode confirmation banner. The recipe lookup (findFormula)
+  // filters down to recipe-bearing rows separately when needed.
   const rows = rawRows
     .slice(1)
     .map((r) => ({
@@ -315,7 +322,12 @@ async function loadParsedSheet() {
       paintName: hasPaintNameColumn ? String(r[paintNameIdx] || "").trim() : "",
       hex: hasHexColumn ? normaliseHex(String(r[hexIdx] || "").trim()) : "",
     }))
-    .filter((r) => r.code && r.component && !isNaN(r.grams) && r.grams > 0);
+    .filter((r) => {
+      if (!r.code) return false;
+      const hasRecipe = r.component && !isNaN(r.grams) && r.grams > 0;
+      const hasName = Boolean(r.paintName);
+      return hasRecipe || hasName;
+    });
 
   const result = {
     rows,
@@ -351,23 +363,34 @@ function findFormula({ rows, hasBrandColumn }, paintCode, brand) {
     // Strict: must match both brand and code.
     // Prevents Mipa code collisions (e.g. Mercedes 723 vs BMW 723).
     matches = rows.filter((r) => r.code === cleanCode && r.brand === cleanBrand);
+
+    // Graceful fallback for partially-migrated data: if no strict match
+    // but rows exist for this code with no brand set, use those.
+    // Keeps the existing single-recipe-without-brand case working while
+    // Rick gradually adds brand values.
+    if (matches.length === 0) {
+      matches = rows.filter((r) => r.code === cleanCode && !r.brand);
+    }
   } else {
     // Legacy mode: sheet doesn't have a Brand column yet, OR caller
     // didn't provide a brand. Match on code alone.
     matches = rows.filter((r) => r.code === cleanCode);
   }
 
+  // Recipe components — only rows that actually have ingredient data.
+  // "Name only" rows (paint_name set but no component) are excluded
+  // from the recipe but contribute to the paint_name + hex lookup.
+  const components = matches
+    .filter((r) => r.component && !isNaN(r.grams) && r.grams > 0)
+    .map(({ component, grams }) => ({ component, grams }));
+
   // Paint name and hex are per-PAINT (not per-ingredient). All rows for
   // the same paint will share the same name/hex, so pick from the first
-  // match. Empty strings if the columns aren't populated yet.
+  // match that has one. Empty strings if those columns aren't populated.
   const paintName = matches.find((r) => r.paintName)?.paintName || "";
   const hex = matches.find((r) => r.hex)?.hex || "";
 
-  return {
-    components: matches.map(({ component, grams }) => ({ component, grams })),
-    paintName,
-    hex,
-  };
+  return { components, paintName, hex };
 }
 
 // ============================================================
@@ -400,29 +423,35 @@ async function getFormula({ paintCode, brand, make }) {
 
   const { components, paintName, hex } = findFormula(parsed, paintCode, brandInput);
 
-  if (components.length === 0) {
-    return {
-      ok: true,
-      status: "formula_not_available",
-      paintCode: String(paintCode).trim().toUpperCase(),
-      brand: brandInput.trim().toUpperCase(),
-      batchSizeMl: BATCH_SIZE_ML,
-      formula: [],
-      paintName: "",  // empty when paint not in DB yet
-      hex: "",
-      message: "We don't have this paint formula on file yet.",
-    };
+  // Status logic:
+  //   found              → we have a full recipe AND we know the name
+  //   name_only          → we know the paint name (and maybe hex) but
+  //                        no recipe yet — still useful for the
+  //                        confirmation banner
+  //   formula_not_available → nothing in the DB for this code+brand
+  let status;
+  let message;
+  if (components.length > 0) {
+    status = "found";
+    message = undefined;
+  } else if (paintName) {
+    status = "name_only";
+    message = "We recognise this paint but haven't published the recipe yet.";
+  } else {
+    status = "formula_not_available";
+    message = "We don't have this paint formula on file yet.";
   }
 
   return {
     ok: true,
-    status: "found",
+    status,
     paintCode: String(paintCode).trim().toUpperCase(),
     brand: brandInput.trim().toUpperCase(),
     batchSizeMl: BATCH_SIZE_ML,
     formula: components,
     paintName,
     hex,
+    ...(message ? { message } : {}),
   };
 }
 
