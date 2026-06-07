@@ -79,6 +79,46 @@ const DVLA_URL = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1
 const VDG_URL_BASE = "https://uk.api.vehicledataglobal.com/r2/lookup";
 
 // ============================================================
+// TEST REG OVERRIDES (A — added 5 Jun 2026 after VDG bill audit)
+// ============================================================
+//
+// Regs in this table SHORT-CIRCUIT the entire lookup pipeline and
+// return canned data. They never touch DVLA, VDG, Redis, or the
+// formula sheet. Use case: Rick (and anyone else) testing the site
+// without burning VDG budget on every refresh.
+//
+// Background: The audit of the May 14 → Jun 5 VDG report showed
+// KD19MYY (Rick's car) was hit 23 times in three weeks. Most of
+// those were Rick smoke-testing his own site. At ~£0.10 a call,
+// that's ~£2.30 of pure self-test cost on one car. Multiply that
+// by every test he wants to do in the next year of dev iteration
+// and it's a real number.
+//
+// To add a tester car: copy an entry, change the key to the reg
+// (uppercase, no spaces), edit the canned response to match the
+// real vehicle. Edit `paintCode` / `paintName` to match a code
+// you actually want to test the downstream flow with — e.g. set
+// it to 707 to test "Crystal White Pearl" recognition end-to-end.
+const TEST_REG_OVERRIDES = {
+  // Rick's car — Volvo XC90, edit paintCode/paintName when his
+  // exact factory paint is confirmed.
+  KD19MYY: {
+    make: "VOLVO",
+    model: "XC90",
+    colour: "BLACK",
+    year: "2019",
+    fuelType: "DIESEL",
+    bodyType: "ESTATE",
+    paintCode: "717",
+    paintName: "Onyx Black",
+    paintHex: "#0a0a0a",
+  },
+  // Add more here as you start using other regs for testing.
+  // The hex column is optional — leave as null and the home
+  // widget's name-to-hex palette will infer a sensible colour.
+};
+
+// ============================================================
 // REDIS
 // ============================================================
 
@@ -322,8 +362,20 @@ async function lookupVDG(reg) {
         firstPaint.ColorCode ||
         firstPaint.RGB ||
         null,
+      // [B] If we got this far, VDG returned a 200 — set a flag so the
+      // main handler knows VDG genuinely answered (even if no paint data),
+      // and the response can be cached negatively for 7 days instead of
+      // being treated as transient. Prevents the ML24PCV pattern: same
+      // VRM hit 12 times in 2 minutes because the response wasn't being
+      // cached. Audit on 5 Jun 2026 logged 16 hits to that one reg.
+      vdgResponded: true,
     };
   } catch (err) {
+    // [B] Parsing/network error after the HTTP response. If it was a
+    // network/timeout we got here via fetchWithRetry which already gave
+    // up. Treat as transient (do not cache). If it was a JSON parsing
+    // failure of a 200 response, that's a VDG schema change and is a
+    // bug to investigate, not a cost concern.
     console.error("VDG lookup failed:", err.message);
     return null;
   }
@@ -547,6 +599,22 @@ async function getCached(reg) {
   }
   if (!redisReady()) return null;
   try {
+    // [D] CACHE KEY VERSIONING POLICY (5 Jun 2026)
+    // -------------------------------------------
+    // The "v10" suffix invalidates ALL previously-cached entries
+    // when bumped. The Jun 5 VDG audit showed that every bump =
+    // 87 unique regs forced to re-hit VDG = ~£8 burned. So:
+    //
+    //   Only bump this version (v10 → v11 → ...) when the SHAPE
+    //   of the cached response actually changes — e.g. we add a
+    //   new top-level field that downstream code MUST see. Just
+    //   changing internal logic, fixing a parse bug, or tweaking
+    //   the silhouette picker DOES NOT justify a bump — the old
+    //   cached responses are still valid.
+    //
+    //   The cost of an unnecessary bump scales linearly with the
+    //   number of regs in the cache. At ~100 regs that's pennies;
+    //   at 10,000 regs that's £100+.
     const data = await redis.get(`paintlookup_v10:${reg}`);
     if (data) {
       console.log(`Redis cache hit: ${reg} (imageUrl=${data.imageUrl ? "set" : "null"})`);
@@ -561,13 +629,28 @@ async function getCached(reg) {
 
 async function setCached(reg, data, isNegative) {
   memorySet(reg, data);
-  if (!redisReady()) return;
+  if (!redisReady()) {
+    // [B] Loud warning instead of silent skip — silent Redis skips were
+    // a contributor to the ML24PCV-style cost bleed: the in-memory cache
+    // dies with the Vercel function instance, so without Redis every
+    // cold start is a fresh VDG call.
+    console.warn(`Redis NOT ready (env vars missing) — ${reg} only in memory cache`);
+    return;
+  }
   try {
     const ttl = isNegative ? REDIS_NEGATIVE_TTL_SECONDS : REDIS_SUCCESS_TTL_SECONDS;
-    console.log(`Caching ${reg} (imageUrl=${data.imageUrl ? "set" : "null"}, isNegative=${isNegative})`);
+    console.log(`Caching ${reg} in Redis (ttl=${ttl}s, isNegative=${isNegative})`);
     await redis.set(`paintlookup_v10:${reg}`, data, { ex: ttl });
+    // [B] Confirm the write actually succeeded by reading back. Without
+    // this, silent Redis failures could leave the function thinking it
+    // cached when nothing was persisted. Costs one extra Redis read per
+    // miss (negligible) and saves us potentially many VDG calls.
+    const verify = await redis.get(`paintlookup_v10:${reg}`);
+    if (!verify) {
+      console.error(`Redis write VERIFICATION FAILED for ${reg} — next lookup will be a VDG call. Check Upstash dashboard for write errors.`);
+    }
   } catch (err) {
-    console.warn("Redis save failed:", err.message);
+    console.error(`Redis save FAILED for ${reg}:`, err.message);
   }
 }
 
@@ -605,6 +688,39 @@ module.exports = async (req, res) => {
         ok: false,
         status: "invalid_vrm",
         error: "That doesn't look like a valid UK registration.",
+      });
+    }
+
+    // ---------- 1b. TEST-REG OVERRIDE ----------
+    // Short-circuit for known test regs (see TEST_REG_OVERRIDES above).
+    // Skips rate limit, cache, DVLA, VDG, formula — returns canned data.
+    // Costs nothing and matches the real response shape so the frontend
+    // doesn't have to do anything different.
+    if (TEST_REG_OVERRIDES[reg]) {
+      const o = TEST_REG_OVERRIDES[reg];
+      console.log(`TEST OVERRIDE: ${reg} — bypassing all external APIs`);
+      return res.status(200).json({
+        ok: true,
+        status: "found",
+        vrm: reg,
+        vehicle: {
+          make: o.make,
+          model: o.model,
+          colour: o.colour,
+          year: o.year,
+          fuelType: o.fuelType,
+          bodyType: o.bodyType,
+        },
+        silhouetteKey: pickSilhouetteKey(o.bodyType, o.model),
+        imageUrl: null,
+        paintCode: o.paintCode,
+        paintName: o.paintName,
+        paintHex: o.paintHex || null,
+        formula: [],
+        formulaStatus: "test_override",
+        batchSizeMl: 10,
+        fromCache: false,
+        isTestOverride: true,
       });
     }
 
