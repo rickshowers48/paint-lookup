@@ -100,18 +100,17 @@ const VDG_URL_BASE = "https://uk.api.vehicledataglobal.com/r2/lookup";
 // you actually want to test the downstream flow with — e.g. set
 // it to 707 to test "Crystal White Pearl" recognition end-to-end.
 const TEST_REG_OVERRIDES = {
-  // Rick's car — Volvo XC90, edit paintCode/paintName when his
-  // exact factory paint is confirmed.
+  // Rick's car — Volvo XC90, Denim Blue (factory paint code 723).
   KD19MYY: {
     make: "VOLVO",
     model: "XC90",
-    colour: "BLACK",
+    colour: "BLUE",
     year: "2019",
     fuelType: "DIESEL",
     bodyType: "ESTATE",
-    paintCode: "717",
-    paintName: "Onyx Black",
-    paintHex: "#0a0a0a",
+    paintCode: "723",
+    paintName: "Denim Blue",
+    paintHex: "#28477A",
   },
   // Add more here as you start using other regs for testing.
   // The hex column is optional — leave as null and the home
