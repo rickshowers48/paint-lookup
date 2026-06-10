@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/generate-label.js": {
+      "includeFiles": "public/**",
+      "maxDuration": 30
+    }
+  }
+}
