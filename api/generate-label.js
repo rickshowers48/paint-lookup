@@ -63,20 +63,22 @@ const PAGE = { width: 303.266, height: 161.516 };
 const toY = yFromTop => PAGE.height - yFromTop;
 
 // Big black rectangle that covers the entire customer-info block,
-// hiding all three placeholder texts. yMax tuned so it stops ABOVE the
-// "Automotive Touch Up Paint..." legal text and the GHS02 pictogram.
-const CUSTOMER_BLOCK = { xMin: 158, yMin: 25, xMax: 285, yMax: 84 };
+// hiding all three placeholder texts. yMax stops ABOVE the legal text
+// and the GHS02 pictogram. xMax extended to 300 to give long paint
+// names enough horizontal room.
+const CUSTOMER_BLOCK = { xMin: 160, yMin: 25, xMax: 300, yMax: 84 };
 
-// Silhouette area — same vertical bounds so the visual baseline matches.
-const SILHOUETTE_BOX = { xMin: 18, yMin: 25, xMax: 158, yMax: 84 };
+// Silhouette area — same vertical bounds, narrowed on the right so it
+// doesn't collide with the customer-info column.
+const SILHOUETTE_BOX = { xMin: 18, yMin: 25, xMax: 150, yMax: 84 };
 
 // Where each piece of customer text gets drawn. yFromTop is the BASELINE
-// of the text. Font sizes reduced so longer paint names like "Brilliant
-// Black" don't overflow the customer block.
+// of the text. Font sizes tuned for typical long paint names ("Crystal
+// White Pearl", "Brilliant Black") to fit without overflow.
 const TEXT_LAYOUT = {
-  reg:       { yFromTop: 50, fontSize: 20 },
-  paintName: { yFromTop: 70, fontSize: 22 },
-  paintCode: { yFromTop: 86, fontSize: 18 },
+  reg:       { yFromTop: 50, fontSize: 18 },
+  paintName: { yFromTop: 70, fontSize: 18 },
+  paintCode: { yFromTop: 85, fontSize: 16 },
 };
 
 // ---- loaders --------------------------------------------------------
