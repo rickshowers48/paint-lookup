@@ -110,7 +110,7 @@ async function loadSilhouette(bodyType) {
 }
 
 // ---- drawing helpers ------------------------------------------------
-function drawBlackOver(page, box, pad = COVER_PAD) {
+function drawBlackOver(page, box, pad = 6) {
   page.drawRectangle({
     x: box.xMin - pad,
     y: toY(box.yMax) - pad,
