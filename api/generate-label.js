@@ -72,12 +72,18 @@ const toY = yFromTop => PAGE.height - yFromTop;
 //   yMax stops above the legal text and the GHS02 pictogram.
 // yMax 84 — empirically tuned so the rect bottom sits just above the
 // "Automotive Touch Up Paint..." legal text line.
-const CUSTOMER_BLOCK = { xMin: 160, yMin: 33, xMax: 285, yMax: 84 };
+// xMin 150 — extends left INTO the silhouette area so it covers the
+// right swoop of the original Canva coupe placeholder.
+const CUSTOMER_BLOCK = { xMin: 150, yMin: 33, xMax: 285, yMax: 84 };
 
-// Silhouette area — same yMin and yMax so visually aligned with the
-// customer block, xMin pulled INSIDE so it doesn't extend past the
-// label edge.
-const SILHOUETTE_BOX = { xMin: 20, yMin: 33, xMax: 150, yMax: 84 };
+// Silhouette black-cover area — extends to xMax 180 so the FULL original
+// Canva coupe placeholder is blacked out (the coupe's tail goes well
+// past the new SUV silhouette's right edge).
+const SILHOUETTE_BOX = { xMin: 20, yMin: 33, xMax: 180, yMax: 84 };
+
+// The actual SUV image is positioned within a narrower x-range so it
+// doesn't get stretched/repositioned by the wider cover box.
+const SILHOUETTE_IMAGE_BOX = { xMin: 20, yMin: 33, xMax: 150, yMax: 84 };
 
 // Where each piece of customer text gets drawn. yFromTop is the BASELINE
 // of the text. Font sizes tuned for typical long paint names to fit
@@ -157,12 +163,14 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
   const silhouette = await pdfDoc.embedPng(silhouetteBuf);
   const page = pdfDoc.getPage(0);
 
-  // 1) Black-out the placeholder silhouette area, then stamp the new one.
-  //    pad=0 so the rect stops exactly at SILHOUETTE_BOX bounds and doesn't
-  //    bleed down into the legal text below.
+  // 1) Black-out the placeholder silhouette area (the wider cover box,
+  //    sized to fully hide the original Canva coupe placeholder).
   drawBlackOver(page, SILHOUETTE_BOX, 0);
-  const boxW = SILHOUETTE_BOX.xMax - SILHOUETTE_BOX.xMin;
-  const boxH = SILHOUETTE_BOX.yMax - SILHOUETTE_BOX.yMin;
+
+  // 2) Stamp the new SUV silhouette using the narrower IMAGE box so the
+  //    SUV doesn't get stretched into the customer-info area.
+  const boxW = SILHOUETTE_IMAGE_BOX.xMax - SILHOUETTE_IMAGE_BOX.xMin;
+  const boxH = SILHOUETTE_IMAGE_BOX.yMax - SILHOUETTE_IMAGE_BOX.yMin;
   const silAspect = silhouette.width / silhouette.height;
   const boxAspect = boxW / boxH;
   let drawW, drawH;
@@ -174,8 +182,8 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
     drawW = boxH * silAspect;
   }
   page.drawImage(silhouette, {
-    x: SILHOUETTE_BOX.xMin + (boxW - drawW) / 2,
-    y: toY(SILHOUETTE_BOX.yMax) + (boxH - drawH) / 2,
+    x: SILHOUETTE_IMAGE_BOX.xMin + (boxW - drawW) / 2,
+    y: toY(SILHOUETTE_IMAGE_BOX.yMax) + (boxH - drawH) / 2,
     width: drawW,
     height: drawH,
   });
