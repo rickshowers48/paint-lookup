@@ -53,38 +53,31 @@ function publicBaseUrl() {
 }
 
 // ---- layout geometry ------------------------------------------------
-// IMPORTANT: Canva exports its PDF with a non-standard MediaBox that doesn't
-// start at (0, 0). The page coordinate origin is offset by MEDIABOX_Y_ORIGIN
-// pts. Without this offset, pdf-lib draws everything 44pt too low.
-//   MediaBox: 0.00 44.40 303.27 205.92
-const PAGE = {
-  width: 303.266,
-  height: 161.516,
-  mediaBoxYOrigin: 44.40,
-};
-// Converts "y from top of visible page" (the convention pdftotext uses) to
-// pdf-lib's coordinate system (origin at MediaBox bottom-left, y goes up).
-const toY = yFromTop =>
-  PAGE.mediaBoxYOrigin + PAGE.height - yFromTop;
+// Coords below are EMPIRICALLY tuned against actual rendered output, not
+// theoretical bboxes. Earlier attempts to use pdftotext bbox y coords
+// produced text 35-45pt lower than expected (Canva exports its PDF with a
+// non-zero MediaBox origin at (0, 44.4)). Rather than fight pdf-lib's
+// coord interpretation, the numbers here are the values that empirically
+// place text and rectangles in the right visible positions.
+const PAGE = { width: 303.266, height: 161.516 };
+const toY = yFromTop => PAGE.height - yFromTop;
 
-// Strategy: nuke the entire customer-info half of the lower section with one
-// big black rectangle, then place new text at fixed positions within it.
-// This sidesteps any precision issues with placeholder bboxes.
+// Big black rectangle that covers the entire customer-info block,
+// hiding all three placeholder texts.
+const CUSTOMER_BLOCK = { xMin: 155, yMin: 25, xMax: 297, yMax: 96 };
 
-// The whole right-of-silhouette block in the lower section
-const CUSTOMER_BLOCK = { xMin: 155, yMin: 63, xMax: 297, yMax: 143 };
+// Silhouette area — big enough to cover the original Canva placeholder
+// silhouette completely, and to fit any of the 38 silhouettes.
+const SILHOUETTE_BOX = { xMin: 18, yMin: 25, xMax: 155, yMax: 96 };
 
-// Where each piece of text gets drawn, anchored to (yFromTop baseline).
-// These are tuned to spread the three text rows evenly inside CUSTOMER_BLOCK.
+// Where each piece of customer text gets drawn. yFromTop is the BASELINE
+// of the text. Empirically tuned to land on top of where the original
+// placeholders were.
 const TEXT_LAYOUT = {
-  reg:       { yFromTop: 86,  fontSize: 26 },
-  paintName: { yFromTop: 112, fontSize: 30 },
-  paintCode: { yFromTop: 137, fontSize: 22 },
+  reg:       { yFromTop: 50, fontSize: 26 },
+  paintName: { yFromTop: 74, fontSize: 30 },
+  paintCode: { yFromTop: 89, fontSize: 22 },
 };
-
-// Silhouette block (left half, lower section). Generous bounds so the
-// original Canva placeholder is always fully covered.
-const SILHOUETTE_BOX = { xMin: 18, yMin: 65, xMax: 155, yMax: 145 };
 
 // ---- loaders --------------------------------------------------------
 async function loadTemplate() {
