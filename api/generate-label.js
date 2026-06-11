@@ -63,22 +63,26 @@ const PAGE = { width: 303.266, height: 161.516 };
 const toY = yFromTop => PAGE.height - yFromTop;
 
 // Big black rectangle that covers the entire customer-info block,
-// hiding all three placeholder texts. yMax stops ABOVE the legal text
-// and the GHS02 pictogram. xMax extended to 300 to give long paint
-// names enough horizontal room.
-const CUSTOMER_BLOCK = { xMin: 160, yMin: 25, xMax: 300, yMax: 84 };
+// hiding all three placeholder texts.
+//   yMin pushed down so the full-width horizontal divider line under the
+//        tagline stays visible (gives the clear strip of paint colour
+//        running along the pen).
+//   xMax pulled INSIDE the original Canva black area so the rect doesn't
+//        extend past the label edge and create a visible black step.
+//   yMax stops above the legal text and the GHS02 pictogram.
+const CUSTOMER_BLOCK = { xMin: 160, yMin: 33, xMax: 285, yMax: 82 };
 
-// Silhouette area — same vertical bounds, narrowed on the right so it
-// doesn't collide with the customer-info column.
-const SILHOUETTE_BOX = { xMin: 18, yMin: 25, xMax: 150, yMax: 84 };
+// Silhouette area — same yMin so visually aligned with the customer
+// block, xMin pulled INSIDE so it doesn't extend past the label edge.
+const SILHOUETTE_BOX = { xMin: 20, yMin: 33, xMax: 150, yMax: 82 };
 
 // Where each piece of customer text gets drawn. yFromTop is the BASELINE
-// of the text. Font sizes tuned for typical long paint names ("Crystal
-// White Pearl", "Brilliant Black") to fit without overflow.
+// of the text. Font sizes tuned for typical long paint names to fit
+// inside the narrower customer block.
 const TEXT_LAYOUT = {
-  reg:       { yFromTop: 50, fontSize: 18 },
-  paintName: { yFromTop: 70, fontSize: 18 },
-  paintCode: { yFromTop: 85, fontSize: 16 },
+  reg:       { yFromTop: 52, fontSize: 18 },
+  paintName: { yFromTop: 70, fontSize: 17 },
+  paintCode: { yFromTop: 85, fontSize: 15 },
 };
 
 // ---- loaders --------------------------------------------------------
