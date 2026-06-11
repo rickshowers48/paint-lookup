@@ -154,8 +154,10 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
   const silhouette = await pdfDoc.embedPng(silhouetteBuf);
   const page = pdfDoc.getPage(0);
 
-  // 1) Black-out the placeholder silhouette area, then stamp the new one
-  drawBlackOver(page, SILHOUETTE_BOX);
+  // 1) Black-out the placeholder silhouette area, then stamp the new one.
+  //    pad=0 so the rect stops exactly at SILHOUETTE_BOX bounds and doesn't
+  //    bleed down into the legal text below.
+  drawBlackOver(page, SILHOUETTE_BOX, 0);
   const boxW = SILHOUETTE_BOX.xMax - SILHOUETTE_BOX.xMin;
   const boxH = SILHOUETTE_BOX.yMax - SILHOUETTE_BOX.yMin;
   const silAspect = silhouette.width / silhouette.height;
