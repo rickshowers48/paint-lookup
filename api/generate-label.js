@@ -70,11 +70,14 @@ const toY = yFromTop => PAGE.height - yFromTop;
 //   xMax pulled INSIDE the original Canva black area so the rect doesn't
 //        extend past the label edge and create a visible black step.
 //   yMax stops above the legal text and the GHS02 pictogram.
-const CUSTOMER_BLOCK = { xMin: 160, yMin: 33, xMax: 285, yMax: 88 };
+// yMax 84 — empirically tuned so the rect bottom sits just above the
+// "Automotive Touch Up Paint..." legal text line.
+const CUSTOMER_BLOCK = { xMin: 160, yMin: 33, xMax: 285, yMax: 84 };
 
-// Silhouette area — same yMin so visually aligned with the customer
-// block, xMin pulled INSIDE so it doesn't extend past the label edge.
-const SILHOUETTE_BOX = { xMin: 20, yMin: 33, xMax: 150, yMax: 88 };
+// Silhouette area — same yMin and yMax so visually aligned with the
+// customer block, xMin pulled INSIDE so it doesn't extend past the
+// label edge.
+const SILHOUETTE_BOX = { xMin: 20, yMin: 33, xMax: 150, yMax: 84 };
 
 // Where each piece of customer text gets drawn. yFromTop is the BASELINE
 // of the text. Font sizes tuned for typical long paint names to fit
