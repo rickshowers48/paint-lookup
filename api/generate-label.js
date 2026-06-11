@@ -16,12 +16,24 @@
  * Response (JSON):
  *   { ok: true, dropboxPath: "/PaintMatchPen/Orders/2026-06-10/KD19MYY.pdf" }
  *
- * Env vars required on Vercel:
- *   DROPBOX_TOKEN   short-lived OAuth access token (rotate via refresh
- *                   token flow in production — see TODO at bottom)
+ * Asset loading strategy:
+ *   - canva-template.pdf is read from the same directory as this file
+ *     (i.e. api/canva-template.pdf). Vercel bundles sibling files with
+ *     the function automatically, so no vercel.json includeFiles is
+ *     needed for the template.
+ *   - Silhouette PNGs are fetched over HTTP from the deployment's
+ *     own public/ directory (which Vercel auto-serves at root). The
+ *     base URL falls back to VERCEL_URL if PUBLIC_BASE_URL isn't set.
+ *
+ * Env vars used on Vercel:
+ *   DROPBOX_TOKEN      short-lived OAuth access token (rotate via
+ *                      refresh-token flow in production)
+ *   PUBLIC_BASE_URL    optional, e.g. "https://paint-lookup.vercel.app".
+ *                      Falls back to VERCEL_URL (auto-set by Vercel) or
+ *                      a hardcoded default.
  */
 
-const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
+const { PDFDocument, rgb } = require('pdf-lib');
 const fontkit = require('@pdf-lib/fontkit');
 const fs = require('fs');
 const path = require('path');
@@ -34,20 +46,16 @@ const cachedSilhouettes = {};
 const ARCHIVO_BLACK_URL =
   'https://fonts.gstatic.com/s/archivoblack/v23/HTxqL289NzCGg4MzN6KJ7eW6OYs.ttf';
 
-// ---- layout geometry ------------------------------------------------
-// Page dimensions from the Canva-exported template (in PDF points).
-const PAGE = { width: 303.266, height: 161.516 };
+function publicBaseUrl() {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return 'https://paint-lookup.vercel.app';
+}
 
-// Coordinate convention: pdftotext reports y from page TOP, but pdf-lib
-// draws using y from page BOTTOM. toY() does the flip.
+// ---- layout geometry ------------------------------------------------
+const PAGE = { width: 303.266, height: 161.516 };
 const toY = yFromTop => PAGE.height - yFromTop;
 
-// Placeholder boxes measured from the Canva PDF via
-//   pdftotext -bbox-layout canva-template.pdf -
-// Style 'solid' = solid white fill (used for the reg).
-// Style 'outline' = stroked outline only (used for PAINT_NAME and
-//   PAINT_CODE — the letter interior is left clear so the customer's
-//   paint colour shows through when the label is on the pen).
 const PLACEHOLDERS = {
   reg: {
     box: { xMin: 189.68, yMin: 77.21, xMax: 252.92, yMax: 94.90 },
@@ -66,19 +74,18 @@ const PLACEHOLDERS = {
   },
 };
 
-// Silhouette box — approximated from visual measurement of the PDF.
-// Tweakable: nudge these numbers if the silhouette ends up slightly
-// mis-sized in the rendered output and we'll lock it in.
 const SILHOUETTE_BOX = { xMin: 22, yMin: 75, xMax: 160, yMax: 135 };
 
 // ---- loaders --------------------------------------------------------
 async function loadTemplate() {
   if (cachedTemplate) return cachedTemplate;
-  const buf = fs.readFileSync(
-    path.join(process.cwd(), 'public', 'canva-template.pdf'),
-  );
-  cachedTemplate = buf;
-  return buf;
+  // PDF lives next to this function file (api/canva-template.pdf).
+  const file = path.join(__dirname, 'canva-template.pdf');
+  if (!fs.existsSync(file)) {
+    throw new Error(`Template not found at ${file}`);
+  }
+  cachedTemplate = fs.readFileSync(file);
+  return cachedTemplate;
 }
 
 async function loadFont() {
@@ -92,14 +99,14 @@ async function loadFont() {
 async function loadSilhouette(bodyType) {
   const safe = String(bodyType || '').replace(/[^a-z0-9-]/gi, '');
   if (cachedSilhouettes[safe]) return cachedSilhouettes[safe];
-  const file = path.join(
-    process.cwd(), 'public', 'silhouettes', `${safe}.png`,
-  );
-  if (!fs.existsSync(file)) {
-    // Fall back to a sensible default rather than failing the order.
-    return loadSilhouette('suv-family');
+
+  const url = `${publicBaseUrl()}/silhouettes/${safe}.png`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    if (safe !== 'suv-family') return loadSilhouette('suv-family');
+    throw new Error(`Silhouette fetch failed: ${res.status} for ${url}`);
   }
-  cachedSilhouettes[safe] = fs.readFileSync(file);
+  cachedSilhouettes[safe] = Buffer.from(await res.arrayBuffer());
   return cachedSilhouettes[safe];
 }
 
@@ -118,41 +125,24 @@ function drawCenteredText(page, font, text, placeholder) {
   const { box, fontSize, style } = placeholder;
   const w = font.widthOfTextAtSize(text, fontSize);
   const x = (box.xMin + box.xMax) / 2 - w / 2;
-  // Y is the baseline. Place baseline ~1pt above the box bottom.
   const y = toY(box.yMax) + 2;
 
   if (style === 'outline') {
-    // Outline-only text via raw PDF text-rendering-mode operator.
-    // 1 Tr = stroke only.
-    page.pushOperators(/* save state */);
-    // Stroke white, no fill — draw text with thick-ish stroke.
+    // Fake outline for v0.1: smaller black text on top of larger white
+    // text creates a visible white border. Will upgrade to proper PDF
+    // text-rendering-mode operator once layout is validated.
     page.drawText(text, {
-      x, y,
-      size: fontSize,
-      font,
-      color: rgb(1, 1, 1),
-      // pdf-lib doesn't expose a strokeOnly option, so as an MVP we
-      // draw a smaller black text on top of larger white text to fake
-      // the outline. Will replace with proper Tr-mode operator once
-      // layout is validated.
+      x, y, size: fontSize, font, color: rgb(1, 1, 1),
     });
-    // The "outline" fake: draw the same text again slightly smaller
-    // in black, centred, so the white edges form an outline.
     const innerSize = fontSize - 2;
     const innerW = font.widthOfTextAtSize(text, innerSize);
     const innerX = (box.xMin + box.xMax) / 2 - innerW / 2;
     page.drawText(text, {
-      x: innerX, y: y + 1,
-      size: innerSize,
-      font,
-      color: rgb(0, 0, 0),
+      x: innerX, y: y + 1, size: innerSize, font, color: rgb(0, 0, 0),
     });
   } else {
     page.drawText(text, {
-      x, y,
-      size: fontSize,
-      font,
-      color: rgb(1, 1, 1),
+      x, y, size: fontSize, font, color: rgb(1, 1, 1),
     });
   }
 }
@@ -169,7 +159,7 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
   const silhouette = await pdfDoc.embedPng(silhouetteBuf);
   const page = pdfDoc.getPage(0);
 
-  // 1) Black-out the placeholder silhouette and stamp in the new one
+  // 1) Black-out the placeholder silhouette area, then stamp the new one
   drawBlackOver(page, SILHOUETTE_BOX);
   const boxW = SILHOUETTE_BOX.xMax - SILHOUETTE_BOX.xMin;
   const boxH = SILHOUETTE_BOX.yMax - SILHOUETTE_BOX.yMin;
@@ -191,7 +181,7 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
   });
 
   // 2) Replace each text placeholder
-  for (const [key, ph] of Object.entries(PLACEHOLDERS)) {
+  for (const ph of Object.values(PLACEHOLDERS)) {
     drawBlackOver(page, ph.box);
   }
   drawCenteredText(page, font, String(reg).toUpperCase(), PLACEHOLDERS.reg);
@@ -230,7 +220,6 @@ async function uploadToDropbox(pdfBuf, dropboxPath) {
 
 // ---- HTTP handler ---------------------------------------------------
 module.exports = async function handler(req, res) {
-  // CORS for the eventual Wix integration.
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -254,7 +243,6 @@ module.exports = async function handler(req, res) {
 
     const pdfBuf = await generateLabelPdf({ reg, paintName, paintCode, bodyType });
 
-    // Dropbox path: /PaintMatchPen/Orders/YYYY-MM-DD/<REG>-<orderId>.pdf
     const today = new Date().toISOString().slice(0, 10);
     const safeReg = String(reg).replace(/\s+/g, '').toUpperCase();
     const suffix = orderId ? `-${String(orderId).replace(/[^a-z0-9-]/gi, '')}` : '';
@@ -269,10 +257,4 @@ module.exports = async function handler(req, res) {
   }
 };
 
-// Export the generator too, for local testing without Dropbox.
 module.exports.generateLabelPdf = generateLabelPdf;
-
-// TODO: swap short-lived DROPBOX_TOKEN for a refresh-token flow.
-//   Add env vars: DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN.
-//   At cold start, POST to https://api.dropboxapi.com/oauth2/token with
-//   grant_type=refresh_token to mint a fresh access token.
