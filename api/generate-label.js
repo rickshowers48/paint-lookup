@@ -53,8 +53,19 @@ function publicBaseUrl() {
 }
 
 // ---- layout geometry ------------------------------------------------
-const PAGE = { width: 303.266, height: 161.516 };
-const toY = yFromTop => PAGE.height - yFromTop;
+// IMPORTANT: Canva exports its PDF with a non-standard MediaBox that doesn't
+// start at (0, 0). The page coordinate origin is offset by MEDIABOX_Y_ORIGIN
+// pts. Without this offset, pdf-lib draws everything 44pt too low.
+//   MediaBox: 0.00 44.40 303.27 205.92
+const PAGE = {
+  width: 303.266,
+  height: 161.516,
+  mediaBoxYOrigin: 44.40,
+};
+// Converts "y from top of visible page" (the convention pdftotext uses) to
+// pdf-lib's coordinate system (origin at MediaBox bottom-left, y goes up).
+const toY = yFromTop =>
+  PAGE.mediaBoxYOrigin + PAGE.height - yFromTop;
 
 // Strategy: nuke the entire customer-info half of the lower section with one
 // big black rectangle, then place new text at fixed positions within it.
