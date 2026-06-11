@@ -47,33 +47,41 @@ const ARCHIVO_BLACK_URL =
   'https://fonts.gstatic.com/s/archivoblack/v23/HTxqL289NzCGg4MzN6KJ7eW6OYs.ttf';
 
 function publicBaseUrl() {
-  return process.env.PUBLIC_BASE_URL || 'https://paint-lookup.vercel.app';
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return 'https://paint-lookup.vercel.app';
 }
-
 
 // ---- layout geometry ------------------------------------------------
 const PAGE = { width: 303.266, height: 161.516 };
 const toY = yFromTop => PAGE.height - yFromTop;
 
+// Boxes here are the *visible* text bounds extracted from the Canva PDF.
+// drawBlackOver() pads them by COVER_PAD on every side so outlined-stroke
+// placeholders don't bleed past the bbox.
+const COVER_PAD = 6;
+
 const PLACEHOLDERS = {
   reg: {
-    box: { xMin: 189.68, yMin: 77.21, xMax: 252.92, yMax: 94.90 },
+    box: { xMin: 185, yMin: 72, xMax: 258, yMax: 99 },
     style: 'solid',
-    fontSize: 20,
+    fontSize: 30,
   },
   paintName: {
-    box: { xMin: 163.62, yMin: 92.78, xMax: 278.74, yMax: 118.64 },
+    box: { xMin: 160, yMin: 92, xMax: 285, yMax: 123 },
     style: 'outline',
-    fontSize: 22,
+    fontSize: 32,
   },
   paintCode: {
-    box: { xMin: 166.86, yMin: 107.03, xMax: 279.92, yMax: 132.89 },
+    box: { xMin: 160, yMin: 110, xMax: 285, yMax: 138 },
     style: 'outline',
-    fontSize: 18,
+    fontSize: 26,
   },
 };
 
-const SILHOUETTE_BOX = { xMin: 22, yMin: 75, xMax: 160, yMax: 135 };
+// SILHOUETTE_BOX padded out to ensure the original Canva placeholder is fully
+// covered. Width 22 -> 175, height 70 -> 142.
+const SILHOUETTE_BOX = { xMin: 22, yMin: 70, xMax: 175, yMax: 142 };
 
 // ---- loaders --------------------------------------------------------
 async function loadTemplate() {
@@ -110,12 +118,12 @@ async function loadSilhouette(bodyType) {
 }
 
 // ---- drawing helpers ------------------------------------------------
-function drawBlackOver(page, box) {
+function drawBlackOver(page, box, pad = COVER_PAD) {
   page.drawRectangle({
-    x: box.xMin - 1,
-    y: toY(box.yMax) - 1,
-    width: (box.xMax - box.xMin) + 2,
-    height: (box.yMax - box.yMin) + 2,
+    x: box.xMin - pad,
+    y: toY(box.yMax) - pad,
+    width: (box.xMax - box.xMin) + pad * 2,
+    height: (box.yMax - box.yMin) + pad * 2,
     color: rgb(0, 0, 0),
   });
 }
