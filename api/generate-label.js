@@ -86,12 +86,14 @@ const SILHOUETTE_BOX = { xMin: 20, yMin: 33, xMax: 180, yMax: 84 };
 const SILHOUETTE_IMAGE_BOX = { xMin: 20, yMin: 33, xMax: 150, yMax: 84 };
 
 // Where each piece of customer text gets drawn. yFromTop is the BASELINE
-// of the text. Font sizes tuned for typical long paint names to fit
-// inside the narrower customer block.
+// of the text. yFromTop values are spread further apart so the three
+// rows have visible breathing room between them. Font sizes are the
+// MAXIMUM — drawCenteredTextInBlock auto-shrinks them if the text won't
+// fit horizontally (handles edge cases like "Supercalafragalistic Green").
 const TEXT_LAYOUT = {
-  reg:       { yFromTop: 52, fontSize: 18 },
-  paintName: { yFromTop: 70, fontSize: 17 },
-  paintCode: { yFromTop: 85, fontSize: 15 },
+  reg:       { yFromTop: 48, fontSize: 18 },
+  paintName: { yFromTop: 68, fontSize: 17 },
+  paintCode: { yFromTop: 86, fontSize: 14 },
 };
 
 // ---- loaders --------------------------------------------------------
@@ -140,8 +142,20 @@ function drawBlackOver(page, box, pad = 6) {
 }
 
 function drawCenteredTextInBlock(page, font, text, layout, block) {
-  const { yFromTop, fontSize } = layout;
-  const w = font.widthOfTextAtSize(text, fontSize);
+  const { yFromTop } = layout;
+  // Auto-shrink: start at the configured fontSize and step down by 1pt
+  // until the text fits within the block's horizontal bounds. Floor at
+  // 7pt so it stays legible even for absurdly long names.
+  let fontSize = layout.fontSize;
+  const blockW = block.xMax - block.xMin;
+  // Leave 4pt of horizontal padding inside the block so text isn't
+  // jammed against the edge.
+  const maxW = blockW - 4;
+  let w = font.widthOfTextAtSize(text, fontSize);
+  while (w > maxW && fontSize > 7) {
+    fontSize -= 1;
+    w = font.widthOfTextAtSize(text, fontSize);
+  }
   const x = (block.xMin + block.xMax) / 2 - w / 2;
   // Position baseline at the given yFromTop coordinate. Characters
   // extend upward from the baseline.
