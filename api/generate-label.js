@@ -49,7 +49,7 @@ const ARCHIVO_BLACK_URL =
 function publicBaseUrl() {
   return process.env.PUBLIC_BASE_URL || 'https://paint-lookup.vercel.app';
 }
-}
+
 
 // ---- layout geometry ------------------------------------------------
 const PAGE = { width: 303.266, height: 161.516 };
