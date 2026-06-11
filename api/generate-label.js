@@ -63,20 +63,20 @@ const PAGE = { width: 303.266, height: 161.516 };
 const toY = yFromTop => PAGE.height - yFromTop;
 
 // Big black rectangle that covers the entire customer-info block,
-// hiding all three placeholder texts.
-const CUSTOMER_BLOCK = { xMin: 155, yMin: 25, xMax: 297, yMax: 96 };
+// hiding all three placeholder texts. yMax tuned so it stops ABOVE the
+// "Automotive Touch Up Paint..." legal text and the GHS02 pictogram.
+const CUSTOMER_BLOCK = { xMin: 158, yMin: 25, xMax: 285, yMax: 84 };
 
-// Silhouette area — big enough to cover the original Canva placeholder
-// silhouette completely, and to fit any of the 38 silhouettes.
-const SILHOUETTE_BOX = { xMin: 18, yMin: 25, xMax: 155, yMax: 96 };
+// Silhouette area — same vertical bounds so the visual baseline matches.
+const SILHOUETTE_BOX = { xMin: 18, yMin: 25, xMax: 158, yMax: 84 };
 
 // Where each piece of customer text gets drawn. yFromTop is the BASELINE
-// of the text. Empirically tuned to land on top of where the original
-// placeholders were.
+// of the text. Font sizes reduced so longer paint names like "Brilliant
+// Black" don't overflow the customer block.
 const TEXT_LAYOUT = {
-  reg:       { yFromTop: 50, fontSize: 26 },
-  paintName: { yFromTop: 74, fontSize: 30 },
-  paintCode: { yFromTop: 89, fontSize: 22 },
+  reg:       { yFromTop: 50, fontSize: 20 },
+  paintName: { yFromTop: 70, fontSize: 22 },
+  paintCode: { yFromTop: 86, fontSize: 18 },
 };
 
 // ---- loaders --------------------------------------------------------
