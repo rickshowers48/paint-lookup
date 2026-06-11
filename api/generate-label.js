@@ -56,32 +56,24 @@ function publicBaseUrl() {
 const PAGE = { width: 303.266, height: 161.516 };
 const toY = yFromTop => PAGE.height - yFromTop;
 
-// Boxes here are the *visible* text bounds extracted from the Canva PDF.
-// drawBlackOver() pads them by COVER_PAD on every side so outlined-stroke
-// placeholders don't bleed past the bbox.
-const COVER_PAD = 6;
+// Strategy: nuke the entire customer-info half of the lower section with one
+// big black rectangle, then place new text at fixed positions within it.
+// This sidesteps any precision issues with placeholder bboxes.
 
-const PLACEHOLDERS = {
-  reg: {
-    box: { xMin: 185, yMin: 72, xMax: 258, yMax: 99 },
-    style: 'solid',
-    fontSize: 30,
-  },
-  paintName: {
-    box: { xMin: 160, yMin: 92, xMax: 285, yMax: 123 },
-    style: 'outline',
-    fontSize: 32,
-  },
-  paintCode: {
-    box: { xMin: 160, yMin: 110, xMax: 285, yMax: 138 },
-    style: 'outline',
-    fontSize: 26,
-  },
+// The whole right-of-silhouette block in the lower section
+const CUSTOMER_BLOCK = { xMin: 155, yMin: 63, xMax: 297, yMax: 143 };
+
+// Where each piece of text gets drawn, anchored to (yFromTop baseline).
+// These are tuned to spread the three text rows evenly inside CUSTOMER_BLOCK.
+const TEXT_LAYOUT = {
+  reg:       { yFromTop: 86,  fontSize: 26 },
+  paintName: { yFromTop: 112, fontSize: 30 },
+  paintCode: { yFromTop: 137, fontSize: 22 },
 };
 
-// SILHOUETTE_BOX padded out to ensure the original Canva placeholder is fully
-// covered. Width 22 -> 175, height 70 -> 142.
-const SILHOUETTE_BOX = { xMin: 22, yMin: 70, xMax: 175, yMax: 142 };
+// Silhouette block (left half, lower section). Generous bounds so the
+// original Canva placeholder is always fully covered.
+const SILHOUETTE_BOX = { xMin: 18, yMin: 65, xMax: 155, yMax: 145 };
 
 // ---- loaders --------------------------------------------------------
 async function loadTemplate() {
@@ -128,30 +120,16 @@ function drawBlackOver(page, box, pad = COVER_PAD) {
   });
 }
 
-function drawCenteredText(page, font, text, placeholder) {
-  const { box, fontSize, style } = placeholder;
+function drawCenteredTextInBlock(page, font, text, layout, block) {
+  const { yFromTop, fontSize } = layout;
   const w = font.widthOfTextAtSize(text, fontSize);
-  const x = (box.xMin + box.xMax) / 2 - w / 2;
-  const y = toY(box.yMax) + 2;
-
-  if (style === 'outline') {
-    // Fake outline for v0.1: smaller black text on top of larger white
-    // text creates a visible white border. Will upgrade to proper PDF
-    // text-rendering-mode operator once layout is validated.
-    page.drawText(text, {
-      x, y, size: fontSize, font, color: rgb(1, 1, 1),
-    });
-    const innerSize = fontSize - 2;
-    const innerW = font.widthOfTextAtSize(text, innerSize);
-    const innerX = (box.xMin + box.xMax) / 2 - innerW / 2;
-    page.drawText(text, {
-      x: innerX, y: y + 1, size: innerSize, font, color: rgb(0, 0, 0),
-    });
-  } else {
-    page.drawText(text, {
-      x, y, size: fontSize, font, color: rgb(1, 1, 1),
-    });
-  }
+  const x = (block.xMin + block.xMax) / 2 - w / 2;
+  // Position baseline at the given yFromTop coordinate. Characters
+  // extend upward from the baseline.
+  const y = toY(yFromTop);
+  page.drawText(text, {
+    x, y, size: fontSize, font, color: rgb(1, 1, 1),
+  });
 }
 
 // ---- core generator -------------------------------------------------
@@ -187,13 +165,16 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
     height: drawH,
   });
 
-  // 2) Replace each text placeholder
-  for (const ph of Object.values(PLACEHOLDERS)) {
-    drawBlackOver(page, ph.box);
-  }
-  drawCenteredText(page, font, String(reg).toUpperCase(), PLACEHOLDERS.reg);
-  drawCenteredText(page, font, paintName, PLACEHOLDERS.paintName);
-  drawCenteredText(page, font, paintCode, PLACEHOLDERS.paintCode);
+  // 2) Black out the entire customer info area in one shot, then place
+  //    the three lines of text inside it. This avoids any precision
+  //    issues with individual placeholder bboxes.
+  drawBlackOver(page, CUSTOMER_BLOCK, 0);
+  drawCenteredTextInBlock(page, font, String(reg).toUpperCase(),
+    TEXT_LAYOUT.reg, CUSTOMER_BLOCK);
+  drawCenteredTextInBlock(page, font, paintName,
+    TEXT_LAYOUT.paintName, CUSTOMER_BLOCK);
+  drawCenteredTextInBlock(page, font, paintCode,
+    TEXT_LAYOUT.paintCode, CUSTOMER_BLOCK);
 
   return Buffer.from(await pdfDoc.save());
 }
