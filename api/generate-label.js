@@ -47,9 +47,8 @@ const ARCHIVO_BLACK_URL =
   'https://fonts.gstatic.com/s/archivoblack/v23/HTxqL289NzCGg4MzN6KJ7eW6OYs.ttf';
 
 function publicBaseUrl() {
-  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL;
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return 'https://paint-lookup.vercel.app';
+  return process.env.PUBLIC_BASE_URL || 'https://paint-lookup.vercel.app';
+}
 }
 
 // ---- layout geometry ------------------------------------------------
