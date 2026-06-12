@@ -33,7 +33,13 @@
  *                      a hardcoded default.
  */
 
-const { PDFDocument, rgb, TextRenderingMode } = require('pdf-lib');
+const {
+  PDFDocument, rgb,
+  TextRenderingMode,
+  setTextRenderingMode,
+  setStrokingColor,
+  setLineWidth,
+} = require('pdf-lib');
 const fontkit = require('@pdf-lib/fontkit');
 const fs = require('fs');
 const path = require('path');
@@ -166,31 +172,24 @@ function drawCenteredTextInBlock(page, font, text, layout, block) {
   const y = toY(yFromTop);
 
   if (layout.style === 'outline') {
-    // Stroke emulation by 8-direction offset draws:
-    // 1) Draw the text 8 times in WHITE at small offsets around centre,
-    //    forming a uniform halo.
-    // 2) Draw the text once in BLACK at the exact centre on top.
-    // The white halo visible around the black core reads as a clean
-    // outline regardless of the font's internal cap-height metrics.
-    const stroke = 0.6;
-    const offsets = [
-      [ stroke,  0       ],
-      [-stroke,  0       ],
-      [ 0,       stroke  ],
-      [ 0,      -stroke  ],
-      [ stroke * 0.7,  stroke * 0.7 ],
-      [-stroke * 0.7,  stroke * 0.7 ],
-      [ stroke * 0.7, -stroke * 0.7 ],
-      [-stroke * 0.7, -stroke * 0.7 ],
-    ];
-    for (const [dx, dy] of offsets) {
-      page.drawText(text, {
-        x: x + dx, y: y + dy, size: fontSize, font, color: rgb(1, 1, 1),
-      });
-    }
+    // TRUE stroke-only outline. The Tr operator (text rendering mode)
+    // is part of the graphics state, so setting it BEFORE drawText
+    // persists into the BT/ET text object pdf-lib generates. With
+    // Tr=1 (Stroke), pdf-lib draws only the outline of each glyph —
+    // letter interior stays transparent so the paint colour shows
+    // through on clear vinyl.
+    page.pushOperators(
+      setStrokingColor(rgb(1, 1, 1)),
+      setLineWidth(0.5),
+      setTextRenderingMode(TextRenderingMode.Stroke),
+    );
     page.drawText(text, {
-      x, y, size: fontSize, font, color: rgb(0, 0, 0),
+      x, y, size: fontSize, font, color: rgb(1, 1, 1),
     });
+    // Reset to fill mode so subsequent text draws aren't stroke-only.
+    page.pushOperators(
+      setTextRenderingMode(TextRenderingMode.Fill),
+    );
   } else {
     page.drawText(text, {
       x, y, size: fontSize, font, color: rgb(1, 1, 1),
@@ -210,12 +209,11 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
   const silhouette = await pdfDoc.embedPng(silhouetteBuf);
   const page = pdfDoc.getPage(0);
 
-  // 1) Black-out the placeholder silhouette area (the wider cover box,
-  //    sized to fully hide the original Canva coupe placeholder).
-  drawBlackOver(page, SILHOUETTE_BOX, 0);
-
-  // 2) Stamp the new SUV silhouette using the narrower IMAGE box so the
-  //    SUV doesn't get stretched into the customer-info area.
+  // 1) Stamp the new silhouette PNG directly. The Canva master no longer
+  //    has a placeholder silhouette to cover, so no black rect is drawn.
+  //    The silhouette PNG is line-art on transparent — when printed on
+  //    clear vinyl, the white outline strokes get white toner and the
+  //    car body interior stays clear so the paint shows through.
   const boxW = SILHOUETTE_IMAGE_BOX.xMax - SILHOUETTE_IMAGE_BOX.xMin;
   const boxH = SILHOUETTE_IMAGE_BOX.yMax - SILHOUETTE_IMAGE_BOX.yMin;
   const silAspect = silhouette.width / silhouette.height;
@@ -235,10 +233,11 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
     height: drawH,
   });
 
-  // 2) Black out the entire customer info area in one shot, then place
-  //    the three lines of text inside it. This avoids any precision
-  //    issues with individual placeholder bboxes.
-  drawBlackOver(page, CUSTOMER_BLOCK, 0);
+  // 2) Stamp the three lines of customer text. The Canva master no
+  //    longer has a black background OR placeholders here — the area
+  //    is transparent — so we just draw the text directly. reg is
+  //    solid white toner; paint name and paint code are stroke-only
+  //    so their letter interiors stay clear for paint to show through.
   drawCenteredTextInBlock(page, font, String(reg).toUpperCase(),
     TEXT_LAYOUT.reg, CUSTOMER_BLOCK);
   drawCenteredTextInBlock(page, font, paintName,
