@@ -33,7 +33,7 @@
  *                      a hardcoded default.
  */
 
-const { PDFDocument, rgb } = require('pdf-lib');
+const { PDFDocument, rgb, TextRenderingMode } = require('pdf-lib');
 const fontkit = require('@pdf-lib/fontkit');
 const fs = require('fs');
 const path = require('path');
@@ -90,10 +90,14 @@ const SILHOUETTE_IMAGE_BOX = { xMin: 20, yMin: 33, xMax: 150, yMax: 84 };
 // rows have visible breathing room between them. Font sizes are the
 // MAXIMUM — drawCenteredTextInBlock auto-shrinks them if the text won't
 // fit horizontally (handles edge cases like "Supercalafragalistic Green").
+// style 'solid' = filled white text (used for the reg — always readable)
+// style 'outline' = stroke-only white border, letter interior left clear
+//   so when printed on clear vinyl, the customer's paint colour shows
+//   through the inside of each letter.
 const TEXT_LAYOUT = {
-  reg:       { yFromTop: 48, fontSize: 18 },
-  paintName: { yFromTop: 68, fontSize: 17 },
-  paintCode: { yFromTop: 86, fontSize: 14 },
+  reg:       { yFromTop: 48, fontSize: 18, style: 'solid'   },
+  paintName: { yFromTop: 68, fontSize: 17, style: 'outline' },
+  paintCode: { yFromTop: 86, fontSize: 14, style: 'outline' },
 };
 
 // ---- loaders --------------------------------------------------------
@@ -160,9 +164,21 @@ function drawCenteredTextInBlock(page, font, text, layout, block) {
   // Position baseline at the given yFromTop coordinate. Characters
   // extend upward from the baseline.
   const y = toY(yFromTop);
-  page.drawText(text, {
-    x, y, size: fontSize, font, color: rgb(1, 1, 1),
-  });
+
+  if (layout.style === 'outline') {
+    // Stroke-only rendering — letter interiors stay transparent so
+    // the paint colour shows through on clear vinyl.
+    page.drawText(text, {
+      x, y, size: fontSize, font,
+      renderingMode: TextRenderingMode.Stroke,
+      color: rgb(1, 1, 1),
+      lineWidth: 0.5,
+    });
+  } else {
+    page.drawText(text, {
+      x, y, size: fontSize, font, color: rgb(1, 1, 1),
+    });
+  }
 }
 
 // ---- core generator -------------------------------------------------
