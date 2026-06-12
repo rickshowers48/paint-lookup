@@ -33,13 +33,7 @@
  *                      a hardcoded default.
  */
 
-const {
-  PDFDocument, rgb,
-  TextRenderingMode,
-  setTextRenderingMode,
-  setStrokingColor,
-  setLineWidth,
-} = require('pdf-lib');
+const { PDFDocument, rgb } = require('pdf-lib');
 const fontkit = require('@pdf-lib/fontkit');
 const fs = require('fs');
 const path = require('path');
@@ -172,24 +166,29 @@ function drawCenteredTextInBlock(page, font, text, layout, block) {
   const y = toY(yFromTop);
 
   if (layout.style === 'outline') {
-    // TRUE stroke-only outline. The Tr operator (text rendering mode)
-    // is part of the graphics state, so setting it BEFORE drawText
-    // persists into the BT/ET text object pdf-lib generates. With
-    // Tr=1 (Stroke), pdf-lib draws only the outline of each glyph —
-    // letter interior stays transparent so the paint colour shows
-    // through on clear vinyl.
-    page.pushOperators(
-      setStrokingColor(rgb(1, 1, 1)),
-      setLineWidth(0.5),
-      setTextRenderingMode(TextRenderingMode.Stroke),
-    );
+    // 8-direction halo (without a black core this time). On the
+    // transparent customer area, this prints as a slightly-thicker
+    // white letter — visible on any paint colour. NOT a true cut-out
+    // (letter interior is solid white toner, not paint colour). True
+    // stroke-only rendering needs deeper pdf-lib work — tracked as a
+    // follow-up task. For now this ships a working pipeline.
+    const stroke = 0.6;
+    const offsets = [
+      [ stroke,  0       ], [-stroke,  0       ],
+      [ 0,       stroke  ], [ 0,      -stroke  ],
+      [ stroke * 0.7,  stroke * 0.7 ],
+      [-stroke * 0.7,  stroke * 0.7 ],
+      [ stroke * 0.7, -stroke * 0.7 ],
+      [-stroke * 0.7, -stroke * 0.7 ],
+    ];
+    for (const [dx, dy] of offsets) {
+      page.drawText(text, {
+        x: x + dx, y: y + dy, size: fontSize, font, color: rgb(1, 1, 1),
+      });
+    }
     page.drawText(text, {
       x, y, size: fontSize, font, color: rgb(1, 1, 1),
     });
-    // Reset to fill mode so subsequent text draws aren't stroke-only.
-    page.pushOperators(
-      setTextRenderingMode(TextRenderingMode.Fill),
-    );
   } else {
     page.drawText(text, {
       x, y, size: fontSize, font, color: rgb(1, 1, 1),
