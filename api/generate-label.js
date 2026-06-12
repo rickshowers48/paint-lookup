@@ -166,13 +166,21 @@ function drawCenteredTextInBlock(page, font, text, layout, block) {
   const y = toY(yFromTop);
 
   if (layout.style === 'outline') {
-    // Stroke-only rendering — letter interiors stay transparent so
-    // the paint colour shows through on clear vinyl.
+    // Visible white-border outline trick: draw the text in WHITE at the
+    // configured fontSize, then draw the same text in BLACK at a slightly
+    // smaller size on top. The white margin around the black "inner"
+    // text reads as an outline. In preview, the black interior blends
+    // with the black background. On the print, the white outline lands
+    // as white toner — exactly what's needed for legibility on dark
+    // paint colours.
     page.drawText(text, {
-      x, y, size: fontSize, font,
-      renderingMode: TextRenderingMode.Stroke,
-      color: rgb(1, 1, 1),
-      lineWidth: 0.5,
+      x, y, size: fontSize, font, color: rgb(1, 1, 1),
+    });
+    const innerSize = fontSize - 2;
+    const innerW = font.widthOfTextAtSize(text, innerSize);
+    const innerX = (block.xMin + block.xMax) / 2 - innerW / 2;
+    page.drawText(text, {
+      x: innerX, y, size: innerSize, font, color: rgb(0, 0, 0),
     });
   } else {
     page.drawText(text, {
