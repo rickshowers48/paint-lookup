@@ -166,21 +166,23 @@ function drawCenteredTextInBlock(page, font, text, layout, block) {
   const y = toY(yFromTop);
 
   if (layout.style === 'outline') {
-    // Visible white-border outline trick: draw the text in WHITE at the
-    // configured fontSize, then draw the same text in BLACK at a slightly
-    // smaller size on top. The white margin around the black "inner"
-    // text reads as an outline. In preview, the black interior blends
-    // with the black background. On the print, the white outline lands
-    // as white toner — exactly what's needed for legibility on dark
-    // paint colours.
+    // Two-pass outline: white text at fontSize, then black text 1pt
+    // smaller centred on top. The black inner is shifted up by half the
+    // cap-height difference so the outer outline sits evenly around it
+    // (otherwise the baseline-aligned smaller text leaves a thicker
+    // outline at the top than the bottom).
     page.drawText(text, {
       x, y, size: fontSize, font, color: rgb(1, 1, 1),
     });
-    const innerSize = fontSize - 2;
+    const innerSize = fontSize - 1;
     const innerW = font.widthOfTextAtSize(text, innerSize);
     const innerX = (block.xMin + block.xMax) / 2 - innerW / 2;
+    // Cap height of Archivo Black is roughly 0.72 * font size; shift the
+    // inner up by half the cap-height delta to centre it vertically.
+    const innerYShift = (fontSize - innerSize) * 0.36;
     page.drawText(text, {
-      x: innerX, y, size: innerSize, font, color: rgb(0, 0, 0),
+      x: innerX, y: y + innerYShift, size: innerSize, font,
+      color: rgb(0, 0, 0),
     });
   } else {
     page.drawText(text, {
