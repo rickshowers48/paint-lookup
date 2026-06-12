@@ -166,23 +166,30 @@ function drawCenteredTextInBlock(page, font, text, layout, block) {
   const y = toY(yFromTop);
 
   if (layout.style === 'outline') {
-    // Two-pass outline: white text at fontSize, then black text 1pt
-    // smaller centred on top. The black inner is shifted up by half the
-    // cap-height difference so the outer outline sits evenly around it
-    // (otherwise the baseline-aligned smaller text leaves a thicker
-    // outline at the top than the bottom).
+    // Stroke emulation by 8-direction offset draws:
+    // 1) Draw the text 8 times in WHITE at small offsets around centre,
+    //    forming a uniform halo.
+    // 2) Draw the text once in BLACK at the exact centre on top.
+    // The white halo visible around the black core reads as a clean
+    // outline regardless of the font's internal cap-height metrics.
+    const stroke = 0.6;
+    const offsets = [
+      [ stroke,  0       ],
+      [-stroke,  0       ],
+      [ 0,       stroke  ],
+      [ 0,      -stroke  ],
+      [ stroke * 0.7,  stroke * 0.7 ],
+      [-stroke * 0.7,  stroke * 0.7 ],
+      [ stroke * 0.7, -stroke * 0.7 ],
+      [-stroke * 0.7, -stroke * 0.7 ],
+    ];
+    for (const [dx, dy] of offsets) {
+      page.drawText(text, {
+        x: x + dx, y: y + dy, size: fontSize, font, color: rgb(1, 1, 1),
+      });
+    }
     page.drawText(text, {
-      x, y, size: fontSize, font, color: rgb(1, 1, 1),
-    });
-    const innerSize = fontSize - 1;
-    const innerW = font.widthOfTextAtSize(text, innerSize);
-    const innerX = (block.xMin + block.xMax) / 2 - innerW / 2;
-    // Cap height of Archivo Black is roughly 0.72 * font size; shift the
-    // inner up by half the cap-height delta to centre it vertically.
-    const innerYShift = (fontSize - innerSize) * 0.36;
-    page.drawText(text, {
-      x: innerX, y: y + innerYShift, size: innerSize, font,
-      color: rgb(0, 0, 0),
+      x, y, size: fontSize, font, color: rgb(0, 0, 0),
     });
   } else {
     page.drawText(text, {
