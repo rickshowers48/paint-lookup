@@ -35,36 +35,77 @@
 
 const { PDFDocument, rgb } = require('pdf-lib');
 
-// Try to wire up stroke-only text rendering. pdf-lib v1.17.1 does export
-// these helpers, but only via deeper paths than the top-level barrel.
-// We attempt several import paths and fall back to a halo (no black
-// core) if none of them yield working operator factories.
-let strokeOnlyOps = null;
+// ---- stroke-only text setup ----------------------------------------
+// True PDF stroke-only text requires three operators set BEFORE
+// page.drawText runs: stroke colour (RG), line width (w), and text
+// rendering mode (Tr=1). pdf-lib's drawText doesn't reset Tr, so the
+// state set in the surrounding graphics state propagates into its BT/ET.
+//
+// We try TWO paths to get those operators:
+//   1. High-level factories from pdf-lib (top-level barrel or deep import)
+//   2. Raw PDFOperator.of(...) construction with literal operator names
+//
+// Whichever yields *defined* values gets used at runtime. If both end
+// up undefined, the halo fallback kicks in. None of this can throw at
+// module load — every step is in a try/catch.
+
+let strokeFactories = null;
+let strokeManual = null;
+
 try {
-  let textState, graphicsState;
+  let TextRenderingMode, setTextRenderingMode, setStrokingColor, setLineWidth;
   try {
-    textState = require('pdf-lib/cjs/api/operators/text-state');
-    graphicsState = require('pdf-lib/cjs/api/operators/graphics-state');
-  } catch (e1) {
-    textState = require('pdf-lib');
-    graphicsState = require('pdf-lib');
+    // Deep imports: most likely path that actually has these in v1.17.1.
+    const ts = require('pdf-lib/cjs/api/operators/text-state');
+    const gs = require('pdf-lib/cjs/api/operators/graphics-state');
+    TextRenderingMode = ts.TextRenderingMode;
+    setTextRenderingMode = ts.setTextRenderingMode;
+    setStrokingColor = gs.setStrokingColor;
+    setLineWidth = gs.setLineWidth;
+  } catch (eDeep) {
+    // Fall back to top-level barrel.
+    const p = require('pdf-lib');
+    TextRenderingMode = p.TextRenderingMode;
+    setTextRenderingMode = p.setTextRenderingMode;
+    setStrokingColor = p.setStrokingColor;
+    setLineWidth = p.setLineWidth;
   }
-  const trm = textState.setTextRenderingMode;
-  const ssc = graphicsState.setStrokingColor;
-  const slw = graphicsState.setLineWidth;
-  const TRM = textState.TextRenderingMode || require('pdf-lib').TextRenderingMode;
-  if (typeof trm === 'function' && typeof ssc === 'function'
-      && typeof slw === 'function' && TRM != null) {
-    strokeOnlyOps = {
-      setTextRenderingMode: trm,
-      setStrokingColor: ssc,
-      setLineWidth: slw,
-      TextRenderingMode: TRM,
+  if (typeof setTextRenderingMode === 'function'
+      && typeof setStrokingColor === 'function'
+      && typeof setLineWidth === 'function'
+      && TextRenderingMode && TextRenderingMode.Stroke != null) {
+    strokeFactories = {
+      setTextRenderingMode, setStrokingColor, setLineWidth, TextRenderingMode,
     };
   }
-} catch (e) {
-  // Stroke-only unavailable; halo fallback will kick in.
-}
+} catch (e) { /* swallow */ }
+
+try {
+  // Raw construction: PDFOperator + PDFNumber are far more likely to
+  // be exported than the operator factories. We build the Tr / RG / w
+  // operators by hand with literal name strings.
+  let PDFOperator, PDFNumber;
+  try {
+    const p = require('pdf-lib');
+    PDFOperator = p.PDFOperator;
+    PDFNumber = p.PDFNumber;
+  } catch (e1) {
+    PDFOperator = require('pdf-lib/cjs/core/operators/PDFOperator').default
+                  || require('pdf-lib/cjs/core/operators/PDFOperator');
+    PDFNumber = require('pdf-lib/cjs/core/objects/PDFNumber').default
+                || require('pdf-lib/cjs/core/objects/PDFNumber');
+  }
+  if (PDFOperator && PDFNumber && typeof PDFOperator.of === 'function'
+      && typeof PDFNumber.of === 'function') {
+    const num = n => PDFNumber.of(n);
+    strokeManual = {
+      setStrokeWhite: () => PDFOperator.of('RG', [num(1), num(1), num(1)]),
+      setLineWidth:   w => PDFOperator.of('w', [num(w)]),
+      setTrStroke:    () => PDFOperator.of('Tr', [num(1)]),
+      setTrFill:      () => PDFOperator.of('Tr', [num(0)]),
+    };
+  }
+} catch (e) { /* swallow */ }
 const fontkit = require('@pdf-lib/fontkit');
 const fs = require('fs');
 const path = require('path');
@@ -195,30 +236,50 @@ function drawCenteredTextInBlock(page, font, text, layout, block) {
   const y = toY(yFromTop);
 
   if (layout.style === 'outline') {
-    // Try true PDF stroke-only rendering first. Tr=1 (Stroke) is part
-    // of the graphics state, so setting it before drawText persists
-    // into the BT/ET text object pdf-lib generates internally. With
-    // stroke-only, the letter interior is genuinely transparent (no
-    // ink in PDF) so the paint colour shows through on clear vinyl.
+    // Try true PDF stroke-only rendering. Tr=1 (Stroke) is part of the
+    // graphics state, so setting it before drawText persists into the
+    // BT/ET text object pdf-lib generates. Letter interior stays
+    // genuinely transparent (no ink) → paint shows through on vinyl.
     let drawnAsStroke = false;
-    if (strokeOnlyOps) {
+
+    // Path 1: high-level factories.
+    if (!drawnAsStroke && strokeFactories) {
       try {
-        page.pushOperators(
-          strokeOnlyOps.setStrokingColor(rgb(1, 1, 1)),
-          strokeOnlyOps.setLineWidth(0.4),
-          strokeOnlyOps.setTextRenderingMode(strokeOnlyOps.TextRenderingMode.Stroke),
-        );
-        page.drawText(text, {
-          x, y, size: fontSize, font, color: rgb(1, 1, 1),
-        });
-        page.pushOperators(
-          strokeOnlyOps.setTextRenderingMode(strokeOnlyOps.TextRenderingMode.Fill),
-        );
-        drawnAsStroke = true;
-      } catch (e) {
-        // Operator dance failed at runtime — fall through to halo.
-      }
+        const a = strokeFactories.setStrokingColor(rgb(1, 1, 1));
+        const b = strokeFactories.setLineWidth(0.4);
+        const c = strokeFactories.setTextRenderingMode(
+          strokeFactories.TextRenderingMode.Stroke);
+        const d = strokeFactories.setTextRenderingMode(
+          strokeFactories.TextRenderingMode.Fill);
+        if (a && b && c && d) {
+          page.pushOperators(a, b, c);
+          page.drawText(text, {
+            x, y, size: fontSize, font, color: rgb(1, 1, 1),
+          });
+          page.pushOperators(d);
+          drawnAsStroke = true;
+        }
+      } catch (e) { /* fall through */ }
     }
+
+    // Path 2: hand-built PDFOperator with literal operator names.
+    if (!drawnAsStroke && strokeManual) {
+      try {
+        const a = strokeManual.setStrokeWhite();
+        const b = strokeManual.setLineWidth(0.4);
+        const c = strokeManual.setTrStroke();
+        const d = strokeManual.setTrFill();
+        if (a && b && c && d) {
+          page.pushOperators(a, b, c);
+          page.drawText(text, {
+            x, y, size: fontSize, font, color: rgb(1, 1, 1),
+          });
+          page.pushOperators(d);
+          drawnAsStroke = true;
+        }
+      } catch (e) { /* fall through to halo */ }
+    }
+
     if (!drawnAsStroke) {
       // Halo fallback: 8 white draws around a centre white draw.
       // Letters appear solid white (no transparent interior), but at
