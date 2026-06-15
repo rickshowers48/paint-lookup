@@ -35,6 +35,29 @@
 
 const { PDFDocument, rgb } = require('pdf-lib');
 
+// ---- PDFOperator + PDFNumber for raw operator construction --------
+// Required for both stroke-only text rendering and the compound-path
+// cut-out clipping. We try the top-level barrel first, then deep paths.
+let RawPDFOperator = null;
+let RawPDFNumber = null;
+try {
+  const p = require('pdf-lib');
+  RawPDFOperator = p.PDFOperator;
+  RawPDFNumber = p.PDFNumber;
+} catch (e) {}
+if (!RawPDFOperator || typeof RawPDFOperator.of !== 'function') {
+  try {
+    const m = require('pdf-lib/cjs/core/operators/PDFOperator');
+    RawPDFOperator = m.default || m;
+  } catch (e) {}
+}
+if (!RawPDFNumber || typeof RawPDFNumber.of !== 'function') {
+  try {
+    const m = require('pdf-lib/cjs/core/objects/PDFNumber');
+    RawPDFNumber = m.default || m;
+  } catch (e) {}
+}
+
 // ---- stroke-only text setup ----------------------------------------
 // True PDF stroke-only text requires three operators set BEFORE
 // page.drawText runs: stroke colour (RG), line width (w), and text
@@ -215,6 +238,129 @@ function drawBlackOver(page, box, pad = 6) {
   });
 }
 
+// Compute final {fontSize, x, y, width} for a centred text item — same
+// auto-shrink logic as drawCenteredTextInBlock but exposed so we can
+// reuse it for the cut-out path construction.
+function computeTextLayout(font, text, layout, block) {
+  let fontSize = layout.fontSize;
+  const blockW = block.xMax - block.xMin;
+  const maxW = blockW - 4;
+  let w = font.widthOfTextAtSize(text, fontSize);
+  while (w > maxW && fontSize > 7) {
+    fontSize -= 1;
+    w = font.widthOfTextAtSize(text, fontSize);
+  }
+  const x = (block.xMin + block.xMax) / 2 - w / 2;
+  const y = toY(layout.yFromTop);
+  return { fontSize, x, y, width: w };
+}
+
+// Push fontkit glyph-path commands as PDF path operators (m / l / c / h),
+// scaled by fontSize and translated to the baseline position.
+function emitGlyphPathOps(ops, fkFont, text, fontSize, baselineX, baselineY) {
+  if (!fkFont || !RawPDFOperator || !RawPDFNumber) return;
+  const num = n => RawPDFNumber.of(n);
+  const op = RawPDFOperator;
+  const upm = fkFont.unitsPerEm || 1000;
+  const scale = fontSize / upm;
+  const run = fkFont.layout(text);
+  const positions = run.positions || [];
+  const glyphs = run.glyphs || [];
+
+  let advX = 0;
+  for (let i = 0; i < glyphs.length; i++) {
+    const glyph = glyphs[i];
+    const pos = positions[i] || {};
+    const gx0 = baselineX + advX + ((pos.xOffset || 0) * scale);
+    const gy0 = baselineY + ((pos.yOffset || 0) * scale);
+    let curX = gx0;
+    let curY = gy0;
+    const path = glyph && glyph.path;
+    const cmds = (path && path.commands) || [];
+    for (const cmd of cmds) {
+      const name = cmd.command;
+      const a = cmd.args || [];
+      if (name === 'moveTo') {
+        const X = gx0 + a[0] * scale;
+        const Y = gy0 + a[1] * scale;
+        ops.push(op.of('m', [num(X), num(Y)]));
+        curX = X; curY = Y;
+      } else if (name === 'lineTo') {
+        const X = gx0 + a[0] * scale;
+        const Y = gy0 + a[1] * scale;
+        ops.push(op.of('l', [num(X), num(Y)]));
+        curX = X; curY = Y;
+      } else if (name === 'bezierCurveTo') {
+        const X1 = gx0 + a[0] * scale, Y1 = gy0 + a[1] * scale;
+        const X2 = gx0 + a[2] * scale, Y2 = gy0 + a[3] * scale;
+        const X3 = gx0 + a[4] * scale, Y3 = gy0 + a[5] * scale;
+        ops.push(op.of('c', [num(X1), num(Y1), num(X2), num(Y2), num(X3), num(Y3)]));
+        curX = X3; curY = Y3;
+      } else if (name === 'quadraticCurveTo') {
+        // Convert Q (P0, Pc, P2) → C with two cubic control points
+        const QX = gx0 + a[0] * scale, QY = gy0 + a[1] * scale;
+        const X3 = gx0 + a[2] * scale, Y3 = gy0 + a[3] * scale;
+        const X1 = curX + (2 / 3) * (QX - curX);
+        const Y1 = curY + (2 / 3) * (QY - curY);
+        const X2 = X3 + (2 / 3) * (QX - X3);
+        const Y2 = Y3 + (2 / 3) * (QY - Y3);
+        ops.push(op.of('c', [num(X1), num(Y1), num(X2), num(Y2), num(X3), num(Y3)]));
+        curX = X3; curY = Y3;
+      } else if (name === 'closePath') {
+        ops.push(op.of('h'));
+      }
+    }
+    const advance = (pos.xAdvance != null ? pos.xAdvance : (glyph.advanceWidth || 0));
+    advX += advance * scale;
+  }
+}
+
+// Draw a black rectangle over `block` with letter shapes cut out of it.
+// Uses PDF even-odd clipping: build a compound path of (outer rect +
+// letter shapes), set it as the clip with W* n, then fill black.
+// Returns true if the cut-out was successfully pushed, false otherwise.
+function drawBlackBlockWithLetterCutouts(page, block, items, fkFont) {
+  if (!RawPDFOperator || !RawPDFNumber || !fkFont) return false;
+  try {
+    const num = n => RawPDFNumber.of(n);
+    const op = RawPDFOperator;
+    const ops = [];
+
+    // Save graphics state so clip path doesn't leak.
+    ops.push(op.of('q'));
+
+    // Outer rectangle path
+    const x = block.xMin;
+    const yMin = toY(block.yMax);
+    const w = block.xMax - block.xMin;
+    const h = block.yMax - block.yMin;
+    ops.push(op.of('re', [num(x), num(yMin), num(w), num(h)]));
+
+    // Letter paths
+    for (const item of items) {
+      emitGlyphPathOps(ops, fkFont, item.text, item.fontSize, item.x, item.y);
+    }
+
+    // Set even-odd clipping path (no fill yet)
+    ops.push(op.of('W*'));
+    ops.push(op.of('n'));
+
+    // Fill black within the clipped region — the area inside the outer
+    // rect but OUTSIDE the letter shapes (the even-odd region).
+    ops.push(op.of('rg', [num(0), num(0), num(0)]));
+    ops.push(op.of('re', [num(x), num(yMin), num(w), num(h)]));
+    ops.push(op.of('f'));
+
+    // Restore graphics state.
+    ops.push(op.of('Q'));
+
+    page.pushOperators(...ops);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 function drawCenteredTextInBlock(page, font, text, layout, block) {
   const { yFromTop } = layout;
   // Auto-shrink: start at the configured fontSize and step down by 1pt
@@ -345,11 +491,31 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
     height: drawH,
   });
 
-  // 2) Stamp the three lines of customer text. The Canva master no
-  //    longer has a black background OR placeholders here — the area
-  //    is transparent — so we just draw the text directly. reg is
-  //    solid white toner; paint name and paint code are stroke-only
-  //    so their letter interiors stay clear for paint to show through.
+  // 2a) Black customer area with LETTER CUT-OUTS for paint name + code.
+  //     The fontkit font gives us glyph outlines; we build a compound
+  //     path (outer rect + letter shapes) and use even-odd clipping
+  //     so the fill only lands OUTSIDE the letters → letter interiors
+  //     stay genuinely transparent → paint shows through on clear
+  //     vinyl. Master must be transparent in this area for this to
+  //     have any effect; if it isn't, the master's black already covers
+  //     everything and this push is redundant but harmless.
+  let fkFont = null;
+  try { fkFont = fontkit.create(fontBuf); } catch (e) {}
+  const paintNameLayout = computeTextLayout(
+    font, paintName, TEXT_LAYOUT.paintName, CUSTOMER_BLOCK);
+  const paintCodeLayout = computeTextLayout(
+    font, paintCode, TEXT_LAYOUT.paintCode, CUSTOMER_BLOCK);
+  drawBlackBlockWithLetterCutouts(page, CUSTOMER_BLOCK, [
+    { text: paintName, fontSize: paintNameLayout.fontSize,
+      x: paintNameLayout.x, y: paintNameLayout.y },
+    { text: paintCode, fontSize: paintCodeLayout.fontSize,
+      x: paintCodeLayout.x, y: paintCodeLayout.y },
+  ], fkFont);
+
+  // 2b) Stamp the three lines of customer text on TOP of the cut-out
+  //     black. reg is solid white toner; paint name and paint code are
+  //     stroke-only so their letter interiors stay clear for paint to
+  //     show through.
   drawCenteredTextInBlock(page, font, String(reg).toUpperCase(),
     TEXT_LAYOUT.reg, CUSTOMER_BLOCK);
   drawCenteredTextInBlock(page, font, paintName,
