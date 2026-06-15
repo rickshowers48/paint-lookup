@@ -35,6 +35,15 @@
 
 const { PDFDocument, rgb } = require('pdf-lib');
 
+// Silhouette body paths (vector data extracted from the 38 SVG silhouettes).
+// Each entry: { vb, bounds:[xMin,yMin,xMax,yMax], commands:[[op, ...coords], ...] }
+// where commands use M/L/C/H absolute and coords are in the SVG viewBox
+// space. We bundle this so the silhouette body shape can be cut OUT of
+// the black middle background (paint shows through the body interior on
+// clear vinyl).
+let SILHOUETTE_PATHS = {};
+try { SILHOUETTE_PATHS = require('./silhouette-paths.json'); } catch (e) {}
+
 // ---- PDFOperator + PDFNumber for raw operator construction --------
 // Required for both stroke-only text rendering and the compound-path
 // cut-out clipping. We try the top-level barrel first, then deep paths.
@@ -315,12 +324,64 @@ function emitGlyphPathOps(ops, fkFont, text, fontSize, baselineX, baselineY) {
   }
 }
 
-// Draw a black rectangle over `block` with letter shapes cut out of it.
-// Uses PDF even-odd clipping: build a compound path of (outer rect +
-// letter shapes), set it as the clip with W* n, then fill black.
-// Returns true if the cut-out was successfully pushed, false otherwise.
-function drawBlackBlockWithLetterCutouts(page, block, items, fkFont) {
-  if (!RawPDFOperator || !RawPDFNumber || !fkFont) return false;
+// Push the silhouette body path's PDF operators (M/L/C/H) into `ops`,
+// scaled and translated so the path fits inside `imageBox` with aspect
+// ratio preserved (same fit math as the silhouette PNG draw).
+function emitSilhouetteBodyOps(ops, bodyType, imageBox) {
+  if (!RawPDFOperator || !RawPDFNumber) return;
+  const sil = SILHOUETTE_PATHS[bodyType] || SILHOUETTE_PATHS['suv-family'];
+  if (!sil || !sil.bounds || !sil.commands) return;
+  const num = n => RawPDFNumber.of(n);
+  const op = RawPDFOperator;
+
+  const [bxMin, byMin, bxMax, byMax] = sil.bounds;
+  const pathW = bxMax - bxMin;
+  const pathH = byMax - byMin;
+  const boxW = imageBox.xMax - imageBox.xMin;
+  const boxH = imageBox.yMax - imageBox.yMin;
+  const pathAspect = pathW / pathH;
+  const boxAspect = boxW / boxH;
+  let drawW, drawH;
+  if (pathAspect > boxAspect) { drawW = boxW; drawH = boxW / pathAspect; }
+  else                       { drawH = boxH; drawW = boxH * pathAspect; }
+  const sx = drawW / pathW;
+  const sy = drawH / pathH;
+  const offX = imageBox.xMin + (boxW - drawW) / 2;
+  // pdf-lib y origin is bottom — bottom of box, then flip Y inside.
+  const boxBottomPdfY = toY(imageBox.yMax);
+  const offY = boxBottomPdfY + (boxH - drawH) / 2;
+
+  // Transform a viewBox-space point (px, py) to PDF coords. SVG y goes
+  // down; PDF y goes up — flip Y by subtracting from drawH and adding
+  // the bottom-left offset.
+  const tx = px => offX + (px - bxMin) * sx;
+  const ty = py => offY + drawH - (py - byMin) * sy;
+
+  for (const cmd of sil.commands) {
+    const c = cmd[0];
+    if (c === 'M') {
+      ops.push(op.of('m', [num(tx(cmd[1])), num(ty(cmd[2]))]));
+    } else if (c === 'L') {
+      ops.push(op.of('l', [num(tx(cmd[1])), num(ty(cmd[2]))]));
+    } else if (c === 'C') {
+      ops.push(op.of('c', [
+        num(tx(cmd[1])), num(ty(cmd[2])),
+        num(tx(cmd[3])), num(ty(cmd[4])),
+        num(tx(cmd[5])), num(ty(cmd[6])),
+      ]));
+    } else if (c === 'H') {
+      ops.push(op.of('h'));
+    }
+  }
+}
+
+// Draw a black rectangle over `block` with letter shapes AND silhouette
+// body shape cut out of it. Uses PDF even-odd clipping: build a compound
+// path of (outer rect + letter shapes + silhouette body), set it as the
+// clip with W* n, then fill black. Returns true if the cut-out was
+// successfully pushed.
+function drawBlackBlockWithCutouts(page, block, letterItems, fkFont, bodyType, silhouetteImageBox) {
+  if (!RawPDFOperator || !RawPDFNumber) return false;
   try {
     const num = n => RawPDFNumber.of(n);
     const op = RawPDFOperator;
@@ -329,7 +390,7 @@ function drawBlackBlockWithLetterCutouts(page, block, items, fkFont) {
     // Save graphics state so clip path doesn't leak.
     ops.push(op.of('q'));
 
-    // Outer rectangle path
+    // Outer rectangle path — the FULL middle area we're blacking out.
     const x = block.xMin;
     const yMin = toY(block.yMax);
     const w = block.xMax - block.xMin;
@@ -337,8 +398,15 @@ function drawBlackBlockWithLetterCutouts(page, block, items, fkFont) {
     ops.push(op.of('re', [num(x), num(yMin), num(w), num(h)]));
 
     // Letter paths
-    for (const item of items) {
-      emitGlyphPathOps(ops, fkFont, item.text, item.fontSize, item.x, item.y);
+    if (fkFont) {
+      for (const item of letterItems) {
+        emitGlyphPathOps(ops, fkFont, item.text, item.fontSize, item.x, item.y);
+      }
+    }
+
+    // Silhouette body path
+    if (bodyType && silhouetteImageBox) {
+      emitSilhouetteBodyOps(ops, bodyType, silhouetteImageBox);
     }
 
     // Set even-odd clipping path (no fill yet)
@@ -346,7 +414,7 @@ function drawBlackBlockWithLetterCutouts(page, block, items, fkFont) {
     ops.push(op.of('n'));
 
     // Fill black within the clipped region — the area inside the outer
-    // rect but OUTSIDE the letter shapes (the even-odd region).
+    // rect but OUTSIDE all the cut-out shapes (the even-odd region).
     ops.push(op.of('rg', [num(0), num(0), num(0)]));
     ops.push(op.of('re', [num(x), num(yMin), num(w), num(h)]));
     ops.push(op.of('f'));
@@ -360,6 +428,9 @@ function drawBlackBlockWithLetterCutouts(page, block, items, fkFont) {
     return false;
   }
 }
+
+// Backwards-compatible name so older callers still work
+const drawBlackBlockWithLetterCutouts = drawBlackBlockWithCutouts;
 
 function drawCenteredTextInBlock(page, font, text, layout, block) {
   const { yFromTop } = layout;
@@ -467,11 +538,39 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
   const silhouette = await pdfDoc.embedPng(silhouetteBuf);
   const page = pdfDoc.getPage(0);
 
-  // 1) Stamp the new silhouette PNG directly. The Canva master no longer
-  //    has a placeholder silhouette to cover, so no black rect is drawn.
-  //    The silhouette PNG is line-art on transparent — when printed on
-  //    clear vinyl, the white outline strokes get white toner and the
-  //    car body interior stays clear so the paint shows through.
+  // 1) Black FULL MIDDLE area with cut-outs for:
+  //       - paint name letter shapes (via fontkit glyph paths)
+  //       - paint code letter shapes
+  //       - silhouette body (via the SVG-derived body path)
+  //     Compound path + even-odd clip → black fill skips inside those
+  //     shapes → letter interiors AND silhouette body interior stay
+  //     genuinely transparent → paint colour shows through on clear
+  //     vinyl. The MIDDLE_BLOCK spans BOTH the silhouette image area
+  //     (left) and the customer text area (right), so the cut-out
+  //     forms one continuous black band with shaped holes.
+  let fkFont = null;
+  try { fkFont = fontkit.create(fontBuf); } catch (e) {}
+  const paintNameLayout = computeTextLayout(
+    font, paintName, TEXT_LAYOUT.paintName, CUSTOMER_BLOCK);
+  const paintCodeLayout = computeTextLayout(
+    font, paintCode, TEXT_LAYOUT.paintCode, CUSTOMER_BLOCK);
+  const MIDDLE_BLOCK = {
+    xMin: Math.min(CUSTOMER_BLOCK.xMin, SILHOUETTE_IMAGE_BOX.xMin),
+    yMin: Math.min(CUSTOMER_BLOCK.yMin, SILHOUETTE_IMAGE_BOX.yMin),
+    xMax: Math.max(CUSTOMER_BLOCK.xMax, SILHOUETTE_IMAGE_BOX.xMax),
+    yMax: Math.max(CUSTOMER_BLOCK.yMax, SILHOUETTE_IMAGE_BOX.yMax),
+  };
+  drawBlackBlockWithCutouts(page, MIDDLE_BLOCK, [
+    { text: paintName, fontSize: paintNameLayout.fontSize,
+      x: paintNameLayout.x, y: paintNameLayout.y },
+    { text: paintCode, fontSize: paintCodeLayout.fontSize,
+      x: paintCodeLayout.x, y: paintCodeLayout.y },
+  ], fkFont, bodyType, SILHOUETTE_IMAGE_BOX);
+
+  // 2) Stamp the silhouette PNG ON TOP of the cut-out. PNG is line-art
+  //    on transparent — its white outline strokes sit at the boundary
+  //    of the cut-out body shape, so the outline is fully visible and
+  //    its body interior is the paint-coloured cut-out underneath.
   const boxW = SILHOUETTE_IMAGE_BOX.xMax - SILHOUETTE_IMAGE_BOX.xMin;
   const boxH = SILHOUETTE_IMAGE_BOX.yMax - SILHOUETTE_IMAGE_BOX.yMin;
   const silAspect = silhouette.width / silhouette.height;
@@ -491,31 +590,9 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
     height: drawH,
   });
 
-  // 2a) Black customer area with LETTER CUT-OUTS for paint name + code.
-  //     The fontkit font gives us glyph outlines; we build a compound
-  //     path (outer rect + letter shapes) and use even-odd clipping
-  //     so the fill only lands OUTSIDE the letters → letter interiors
-  //     stay genuinely transparent → paint shows through on clear
-  //     vinyl. Master must be transparent in this area for this to
-  //     have any effect; if it isn't, the master's black already covers
-  //     everything and this push is redundant but harmless.
-  let fkFont = null;
-  try { fkFont = fontkit.create(fontBuf); } catch (e) {}
-  const paintNameLayout = computeTextLayout(
-    font, paintName, TEXT_LAYOUT.paintName, CUSTOMER_BLOCK);
-  const paintCodeLayout = computeTextLayout(
-    font, paintCode, TEXT_LAYOUT.paintCode, CUSTOMER_BLOCK);
-  drawBlackBlockWithLetterCutouts(page, CUSTOMER_BLOCK, [
-    { text: paintName, fontSize: paintNameLayout.fontSize,
-      x: paintNameLayout.x, y: paintNameLayout.y },
-    { text: paintCode, fontSize: paintCodeLayout.fontSize,
-      x: paintCodeLayout.x, y: paintCodeLayout.y },
-  ], fkFont);
-
-  // 2b) Stamp the three lines of customer text on TOP of the cut-out
-  //     black. reg is solid white toner; paint name and paint code are
-  //     stroke-only so their letter interiors stay clear for paint to
-  //     show through.
+  // 3) Stamp the three lines of customer text on TOP. reg is solid
+  //    white toner; paint name and paint code are stroke-only so their
+  //    letter interiors stay clear for paint to show through.
   drawCenteredTextInBlock(page, font, String(reg).toUpperCase(),
     TEXT_LAYOUT.reg, CUSTOMER_BLOCK);
   drawCenteredTextInBlock(page, font, paintName,
