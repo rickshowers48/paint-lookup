@@ -34,6 +34,37 @@
  */
 
 const { PDFDocument, rgb } = require('pdf-lib');
+
+// Try to wire up stroke-only text rendering. pdf-lib v1.17.1 does export
+// these helpers, but only via deeper paths than the top-level barrel.
+// We attempt several import paths and fall back to a halo (no black
+// core) if none of them yield working operator factories.
+let strokeOnlyOps = null;
+try {
+  let textState, graphicsState;
+  try {
+    textState = require('pdf-lib/cjs/api/operators/text-state');
+    graphicsState = require('pdf-lib/cjs/api/operators/graphics-state');
+  } catch (e1) {
+    textState = require('pdf-lib');
+    graphicsState = require('pdf-lib');
+  }
+  const trm = textState.setTextRenderingMode;
+  const ssc = graphicsState.setStrokingColor;
+  const slw = graphicsState.setLineWidth;
+  const TRM = textState.TextRenderingMode || require('pdf-lib').TextRenderingMode;
+  if (typeof trm === 'function' && typeof ssc === 'function'
+      && typeof slw === 'function' && TRM != null) {
+    strokeOnlyOps = {
+      setTextRenderingMode: trm,
+      setStrokingColor: ssc,
+      setLineWidth: slw,
+      TextRenderingMode: TRM,
+    };
+  }
+} catch (e) {
+  // Stroke-only unavailable; halo fallback will kick in.
+}
 const fontkit = require('@pdf-lib/fontkit');
 const fs = require('fs');
 const path = require('path');
@@ -164,29 +195,52 @@ function drawCenteredTextInBlock(page, font, text, layout, block) {
   const y = toY(yFromTop);
 
   if (layout.style === 'outline') {
-    // 8-direction halo (without a black core this time). On the
-    // transparent customer area, this prints as a slightly-thicker
-    // white letter — visible on any paint colour. NOT a true cut-out
-    // (letter interior is solid white toner, not paint colour). True
-    // stroke-only rendering needs deeper pdf-lib work — tracked as a
-    // follow-up task. For now this ships a working pipeline.
-    const stroke = 0.6;
-    const offsets = [
-      [ stroke,  0       ], [-stroke,  0       ],
-      [ 0,       stroke  ], [ 0,      -stroke  ],
-      [ stroke * 0.7,  stroke * 0.7 ],
-      [-stroke * 0.7,  stroke * 0.7 ],
-      [ stroke * 0.7, -stroke * 0.7 ],
-      [-stroke * 0.7, -stroke * 0.7 ],
-    ];
-    for (const [dx, dy] of offsets) {
+    // Try true PDF stroke-only rendering first. Tr=1 (Stroke) is part
+    // of the graphics state, so setting it before drawText persists
+    // into the BT/ET text object pdf-lib generates internally. With
+    // stroke-only, the letter interior is genuinely transparent (no
+    // ink in PDF) so the paint colour shows through on clear vinyl.
+    let drawnAsStroke = false;
+    if (strokeOnlyOps) {
+      try {
+        page.pushOperators(
+          strokeOnlyOps.setStrokingColor(rgb(1, 1, 1)),
+          strokeOnlyOps.setLineWidth(0.4),
+          strokeOnlyOps.setTextRenderingMode(strokeOnlyOps.TextRenderingMode.Stroke),
+        );
+        page.drawText(text, {
+          x, y, size: fontSize, font, color: rgb(1, 1, 1),
+        });
+        page.pushOperators(
+          strokeOnlyOps.setTextRenderingMode(strokeOnlyOps.TextRenderingMode.Fill),
+        );
+        drawnAsStroke = true;
+      } catch (e) {
+        // Operator dance failed at runtime — fall through to halo.
+      }
+    }
+    if (!drawnAsStroke) {
+      // Halo fallback: 8 white draws around a centre white draw.
+      // Letters appear solid white (no transparent interior), but at
+      // least nothing prints as black ink in the middle.
+      const stroke = 0.6;
+      const offsets = [
+        [ stroke,  0       ], [-stroke,  0       ],
+        [ 0,       stroke  ], [ 0,      -stroke  ],
+        [ stroke * 0.7,  stroke * 0.7 ],
+        [-stroke * 0.7,  stroke * 0.7 ],
+        [ stroke * 0.7, -stroke * 0.7 ],
+        [-stroke * 0.7, -stroke * 0.7 ],
+      ];
+      for (const [dx, dy] of offsets) {
+        page.drawText(text, {
+          x: x + dx, y: y + dy, size: fontSize, font, color: rgb(1, 1, 1),
+        });
+      }
       page.drawText(text, {
-        x: x + dx, y: y + dy, size: fontSize, font, color: rgb(1, 1, 1),
+        x, y, size: fontSize, font, color: rgb(1, 1, 1),
       });
     }
-    page.drawText(text, {
-      x, y, size: fontSize, font, color: rgb(1, 1, 1),
-    });
   } else {
     page.drawText(text, {
       x, y, size: fontSize, font, color: rgb(1, 1, 1),
