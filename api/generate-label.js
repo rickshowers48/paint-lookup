@@ -53,13 +53,10 @@ function publicBaseUrl() {
 }
 
 // ---- layout geometry ------------------------------------------------
-// Coords below are EMPIRICALLY tuned against actual rendered output, not
-// theoretical bboxes. Earlier attempts to use pdftotext bbox y coords
-// produced text 35-45pt lower than expected (Canva exports its PDF with a
-// non-zero MediaBox origin at (0, 44.4)). Rather than fight pdf-lib's
-// coord interpretation, the numbers here are the values that empirically
-// place text and rectangles in the right visible positions.
-const PAGE = { width: 303.266, height: 161.516 };
+// New Canva master is exported as SVG → converted to PDF with a clean
+// (0, 0) origin MediaBox at 269.25 × 127.5 pts. The earlier empirical
+// offset (~44pt) is gone — yFromTop now equals pdftotext top-down y.
+const PAGE = { width: 269.25, height: 127.5 };
 const toY = yFromTop => PAGE.height - yFromTop;
 
 // Big black rectangle that covers the entire customer-info block,
@@ -70,20 +67,17 @@ const toY = yFromTop => PAGE.height - yFromTop;
 //   xMax pulled INSIDE the original Canva black area so the rect doesn't
 //        extend past the label edge and create a visible black step.
 //   yMax stops above the legal text and the GHS02 pictogram.
-// yMax 84 — empirically tuned so the rect bottom sits just above the
-// "Automotive Touch Up Paint..." legal text line.
-// xMin 150 — extends left INTO the silhouette area so it covers the
-// right swoop of the original Canva coupe placeholder.
-const CUSTOMER_BLOCK = { xMin: 150, yMin: 33, xMax: 285, yMax: 84 };
+// New page coords. Top brand strip occupies y 0-54, divider near y 55,
+// transparent middle y 56-110, bottom legal strip y 110-127.5.
+// Customer column is the right half of the middle area.
+const CUSTOMER_BLOCK = { xMin: 133, yMin: 58, xMax: 253, yMax: 108 };
 
-// Silhouette black-cover area — extends to xMax 180 so the FULL original
-// Canva coupe placeholder is blacked out (the coupe's tail goes well
-// past the new SUV silhouette's right edge).
-const SILHOUETTE_BOX = { xMin: 20, yMin: 33, xMax: 180, yMax: 84 };
+// Silhouette area kept identical to image box now that we no longer
+// need to cover any placeholder behind it.
+const SILHOUETTE_BOX = { xMin: 18, yMin: 58, xMax: 133, yMax: 108 };
 
-// The actual SUV image is positioned within a narrower x-range so it
-// doesn't get stretched/repositioned by the wider cover box.
-const SILHOUETTE_IMAGE_BOX = { xMin: 20, yMin: 33, xMax: 150, yMax: 84 };
+// The actual silhouette image goes in the left half of the middle area.
+const SILHOUETTE_IMAGE_BOX = { xMin: 18, yMin: 58, xMax: 133, yMax: 108 };
 
 // Where each piece of customer text gets drawn. yFromTop is the BASELINE
 // of the text. yFromTop values are spread further apart so the three
@@ -94,10 +88,14 @@ const SILHOUETTE_IMAGE_BOX = { xMin: 20, yMin: 33, xMax: 150, yMax: 84 };
 // style 'outline' = stroke-only white border, letter interior left clear
 //   so when printed on clear vinyl, the customer's paint colour shows
 //   through the inside of each letter.
+// Tuned for the new SVG-derived PDF: 0,0 origin means yFromTop maps
+// directly to pdftotext y. Transparent middle band spans roughly y
+// 58-108 on the 127.5pt page. Font sizes scaled down to suit the
+// smaller page.
 const TEXT_LAYOUT = {
-  reg:       { yFromTop: 48, fontSize: 18, style: 'solid'   },
-  paintName: { yFromTop: 68, fontSize: 17, style: 'outline' },
-  paintCode: { yFromTop: 86, fontSize: 14, style: 'outline' },
+  reg:       { yFromTop: 70,  fontSize: 14, style: 'solid'   },
+  paintName: { yFromTop: 87,  fontSize: 13, style: 'outline' },
+  paintCode: { yFromTop: 103, fontSize: 11, style: 'outline' },
 };
 
 // ---- loaders --------------------------------------------------------
