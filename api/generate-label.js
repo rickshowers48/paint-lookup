@@ -206,8 +206,8 @@ const SILHOUETTE_IMAGE_BOX = { xMin: 18, yMin: 58, xMax: 133, yMax: 108 };
 // smaller page.
 const TEXT_LAYOUT = {
   reg:       { yFromTop: 70,  fontSize: 14, style: 'solid'   },
-  paintName: { yFromTop: 87,  fontSize: 13, style: 'outline' },
-  paintCode: { yFromTop: 103, fontSize: 11, style: 'outline' },
+  paintName: { yFromTop: 88,  fontSize: 15, style: 'outline' },
+  paintCode: { yFromTop: 104, fontSize: 13, style: 'outline' },
 };
 
 // ---- loaders --------------------------------------------------------
@@ -559,11 +559,15 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
   //    Cover those four transparent zones with explicit black rectangles
   //    BEFORE drawing anything else on top (the silhouette + customer
   //    block come next, drawn on top of these covers).
-  const EDGE_BLACK_TOP    = { xMin: 0,   yMin: 49,  xMax: 269.25, yMax: 58  };
+  // NOTE: deliberately NO top-edge black cover at y 49-58 — the thin
+  // transparent strip at y ≈ 51-54 sits just below the "YOUR CAR. YOUR
+  // COLOUR." brand strip and Rick wants it to keep showing paint colour
+  // (a subtle paint-coloured reveal that links the brand strip to the
+  // silhouette panel below).
   const EDGE_BLACK_BOTTOM = { xMin: 0,   yMin: 108, xMax: 269.25, yMax: 113 };
-  const EDGE_BLACK_LEFT   = { xMin: 0,   yMin: 49,  xMax: 18,     yMax: 113 };
-  const EDGE_BLACK_RIGHT  = { xMin: 253, yMin: 49,  xMax: 269.25, yMax: 113 };
-  for (const z of [EDGE_BLACK_TOP, EDGE_BLACK_BOTTOM, EDGE_BLACK_LEFT, EDGE_BLACK_RIGHT]) {
+  const EDGE_BLACK_LEFT   = { xMin: 0,   yMin: 55,  xMax: 18,     yMax: 113 };
+  const EDGE_BLACK_RIGHT  = { xMin: 253, yMin: 55,  xMax: 269.25, yMax: 113 };
+  for (const z of [EDGE_BLACK_BOTTOM, EDGE_BLACK_LEFT, EDGE_BLACK_RIGHT]) {
     page.drawRectangle({
       x: z.xMin,
       y: toY(z.yMax),
