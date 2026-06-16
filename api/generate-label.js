@@ -538,39 +538,36 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
   const silhouette = await pdfDoc.embedPng(silhouetteBuf);
   const page = pdfDoc.getPage(0);
 
-  // 1) Black FULL MIDDLE area with cut-outs for:
+  // 1) Black CUSTOMER block (right half only) with cut-outs for:
   //       - paint name letter shapes (via fontkit glyph paths)
   //       - paint code letter shapes
-  //       - silhouette body (via the SVG-derived body path)
-  //     Compound path + even-odd clip → black fill skips inside those
-  //     shapes → letter interiors AND silhouette body interior stay
-  //     genuinely transparent → paint colour shows through on clear
-  //     vinyl. The MIDDLE_BLOCK spans BOTH the silhouette image area
-  //     (left) and the customer text area (right), so the cut-out
-  //     forms one continuous black band with shaped holes.
+  //     Compound path + even-odd clip → black fill skips inside the
+  //     letter shapes → letter interiors stay genuinely transparent →
+  //     paint colour shows through on clear vinyl.
+  //
+  //     NOTE: Unlike earlier versions we DO NOT fill the silhouette
+  //     image area on the LEFT with black, nor cut a vector silhouette
+  //     body out of it. Rick's hand-drawn silhouette PNGs are now
+  //     white-body-on-black with their own transparent paint-accent
+  //     regions baked in — they supply their own background. We just
+  //     stamp the PNG into a transparent zone of the master.
   let fkFont = null;
   try { fkFont = fontkit.create(fontBuf); } catch (e) {}
   const paintNameLayout = computeTextLayout(
     font, paintName, TEXT_LAYOUT.paintName, CUSTOMER_BLOCK);
   const paintCodeLayout = computeTextLayout(
     font, paintCode, TEXT_LAYOUT.paintCode, CUSTOMER_BLOCK);
-  const MIDDLE_BLOCK = {
-    xMin: Math.min(CUSTOMER_BLOCK.xMin, SILHOUETTE_IMAGE_BOX.xMin),
-    yMin: Math.min(CUSTOMER_BLOCK.yMin, SILHOUETTE_IMAGE_BOX.yMin),
-    xMax: Math.max(CUSTOMER_BLOCK.xMax, SILHOUETTE_IMAGE_BOX.xMax),
-    yMax: Math.max(CUSTOMER_BLOCK.yMax, SILHOUETTE_IMAGE_BOX.yMax),
-  };
-  drawBlackBlockWithCutouts(page, MIDDLE_BLOCK, [
+  drawBlackBlockWithCutouts(page, CUSTOMER_BLOCK, [
     { text: paintName, fontSize: paintNameLayout.fontSize,
       x: paintNameLayout.x, y: paintNameLayout.y },
     { text: paintCode, fontSize: paintCodeLayout.fontSize,
       x: paintCodeLayout.x, y: paintCodeLayout.y },
-  ], fkFont, bodyType, SILHOUETTE_IMAGE_BOX);
+  ], fkFont, null, null);  // no vector silhouette-body cut-out
 
-  // 2) Stamp the silhouette PNG ON TOP of the cut-out. PNG is line-art
-  //    on transparent — its white outline strokes sit at the boundary
-  //    of the cut-out body shape, so the outline is fully visible and
-  //    its body interior is the paint-coloured cut-out underneath.
+  // 2) Stamp the silhouette PNG into the transparent silhouette area.
+  //    PNG itself supplies the black background, the white car body,
+  //    and the small transparent areas (windows, open tops, wheel hubs)
+  //    where paint colour shows through.
   const boxW = SILHOUETTE_IMAGE_BOX.xMax - SILHOUETTE_IMAGE_BOX.xMin;
   const boxH = SILHOUETTE_IMAGE_BOX.yMax - SILHOUETTE_IMAGE_BOX.yMin;
   const silAspect = silhouette.width / silhouette.height;
