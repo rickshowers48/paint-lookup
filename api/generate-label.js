@@ -471,7 +471,7 @@ function drawCenteredTextInBlock(page, font, text, layout, block) {
     if (!drawnAsStroke && strokeFactories) {
       try {
         const a = strokeFactories.setStrokingColor(rgb(1, 1, 1));
-        const b = strokeFactories.setLineWidth(1.0);
+        const b = strokeFactories.setLineWidth(2.0);
         const c = strokeFactories.setTextRenderingMode(
           strokeFactories.strokeModeValue);
         const d = strokeFactories.setTextRenderingMode(
@@ -491,7 +491,7 @@ function drawCenteredTextInBlock(page, font, text, layout, block) {
     if (!drawnAsStroke && strokeManual) {
       try {
         const a = strokeManual.setStrokeWhite();
-        const b = strokeManual.setLineWidth(1.0);
+        const b = strokeManual.setLineWidth(2.0);
         const c = strokeManual.setTrStroke();
         const d = strokeManual.setTrFill();
         if (a && b && c && d) {
