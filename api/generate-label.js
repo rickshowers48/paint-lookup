@@ -105,9 +105,15 @@ try {
   if (typeof setTextRenderingMode === 'function'
       && typeof setStrokingColor === 'function'
       && typeof setLineWidth === 'function'
-      && TextRenderingMode && TextRenderingMode.Stroke != null) {
+      && TextRenderingMode
+      // pdf-lib v1.17.1 spells the stroke mode "Outline"; older docs called
+      // it "Stroke". Accept whichever the installed version exports.
+      && (TextRenderingMode.Outline != null || TextRenderingMode.Stroke != null)) {
     strokeFactories = {
       setTextRenderingMode, setStrokingColor, setLineWidth, TextRenderingMode,
+      strokeModeValue: TextRenderingMode.Outline != null
+        ? TextRenderingMode.Outline : TextRenderingMode.Stroke,
+      fillModeValue:   TextRenderingMode.Fill,
     };
   }
 } catch (e) { /* swallow */ }
@@ -174,14 +180,17 @@ const toY = yFromTop => PAGE.height - yFromTop;
 // New page coords. Top brand strip occupies y 0-54, divider near y 55,
 // transparent middle y 56-110, bottom legal strip y 110-127.5.
 // Customer column is the right half of the middle area.
-const CUSTOMER_BLOCK = { xMin: 133, yMin: 58, xMax: 253, yMax: 108 };
+// Customer block sits on the right half. Pulled slightly INWARD on its
+// left edge so there's a thin paint-coloured gap between the silhouette
+// area and the customer block — gives the label some breathing room.
+const CUSTOMER_BLOCK = { xMin: 138, yMin: 58, xMax: 253, yMax: 108 };
 
-// Silhouette area kept identical to image box now that we no longer
-// need to cover any placeholder behind it.
-const SILHOUETTE_BOX = { xMin: 18, yMin: 58, xMax: 133, yMax: 108 };
+// Silhouette area mirrors the gap on its right edge so the two black
+// rectangles don't butt up against each other.
+const SILHOUETTE_BOX = { xMin: 18, yMin: 58, xMax: 128, yMax: 108 };
 
 // The actual silhouette image goes in the left half of the middle area.
-const SILHOUETTE_IMAGE_BOX = { xMin: 18, yMin: 58, xMax: 133, yMax: 108 };
+const SILHOUETTE_IMAGE_BOX = { xMin: 18, yMin: 58, xMax: 128, yMax: 108 };
 
 // Where each piece of customer text gets drawn. yFromTop is the BASELINE
 // of the text. yFromTop values are spread further apart so the three
@@ -465,9 +474,9 @@ function drawCenteredTextInBlock(page, font, text, layout, block) {
         const a = strokeFactories.setStrokingColor(rgb(1, 1, 1));
         const b = strokeFactories.setLineWidth(0.4);
         const c = strokeFactories.setTextRenderingMode(
-          strokeFactories.TextRenderingMode.Stroke);
+          strokeFactories.strokeModeValue);
         const d = strokeFactories.setTextRenderingMode(
-          strokeFactories.TextRenderingMode.Fill);
+          strokeFactories.fillModeValue);
         if (a && b && c && d) {
           page.pushOperators(a, b, c);
           page.drawText(text, {
@@ -568,6 +577,12 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
   //    PNG itself supplies the black background, the white car body,
   //    and the small transparent areas (windows, open tops, wheel hubs)
   //    where paint colour shows through.
+  //
+  //    After aspect-fitting the PNG into the box, there'll usually be
+  //    empty padding bars top+bottom (if PNG is wider than box) or
+  //    left+right (if PNG is taller than box). We fill those bars with
+  //    BLACK *before* drawing the PNG so the gaps look like a single
+  //    continuous black panel — matching what the customer block does.
   const boxW = SILHOUETTE_IMAGE_BOX.xMax - SILHOUETTE_IMAGE_BOX.xMin;
   const boxH = SILHOUETTE_IMAGE_BOX.yMax - SILHOUETTE_IMAGE_BOX.yMin;
   const silAspect = silhouette.width / silhouette.height;
@@ -580,9 +595,49 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
     drawH = boxH;
     drawW = boxH * silAspect;
   }
+  const padX = (boxW - drawW) / 2;
+  const padY = (boxH - drawH) / 2;
+  const drawX = SILHOUETTE_IMAGE_BOX.xMin + padX;
+  const drawY = toY(SILHOUETTE_IMAGE_BOX.yMax) + padY;
+
+  // Fill horizontal bars (above and below the PNG).
+  if (padY > 0.01) {
+    page.drawRectangle({
+      x: SILHOUETTE_IMAGE_BOX.xMin,
+      y: toY(SILHOUETTE_IMAGE_BOX.yMax),
+      width: boxW,
+      height: padY,
+      color: rgb(0, 0, 0),
+    });
+    page.drawRectangle({
+      x: SILHOUETTE_IMAGE_BOX.xMin,
+      y: toY(SILHOUETTE_IMAGE_BOX.yMax) + padY + drawH,
+      width: boxW,
+      height: padY,
+      color: rgb(0, 0, 0),
+    });
+  }
+  // Fill vertical bars (left and right of the PNG).
+  if (padX > 0.01) {
+    page.drawRectangle({
+      x: SILHOUETTE_IMAGE_BOX.xMin,
+      y: toY(SILHOUETTE_IMAGE_BOX.yMax),
+      width: padX,
+      height: boxH,
+      color: rgb(0, 0, 0),
+    });
+    page.drawRectangle({
+      x: SILHOUETTE_IMAGE_BOX.xMin + padX + drawW,
+      y: toY(SILHOUETTE_IMAGE_BOX.yMax),
+      width: padX,
+      height: boxH,
+      color: rgb(0, 0, 0),
+    });
+  }
+
   page.drawImage(silhouette, {
-    x: SILHOUETTE_IMAGE_BOX.xMin + (boxW - drawW) / 2,
-    y: toY(SILHOUETTE_IMAGE_BOX.yMax) + (boxH - drawH) / 2,
+    x: drawX,
+    y: drawY,
     width: drawW,
     height: drawH,
   });
