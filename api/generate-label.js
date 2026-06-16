@@ -180,17 +180,16 @@ const toY = yFromTop => PAGE.height - yFromTop;
 // New page coords. Top brand strip occupies y 0-54, divider near y 55,
 // transparent middle y 56-110, bottom legal strip y 110-127.5.
 // Customer column is the right half of the middle area.
-// Customer block sits on the right half. Pulled slightly INWARD on its
-// left edge so there's a thin paint-coloured gap between the silhouette
-// area and the customer block — gives the label some breathing room.
-const CUSTOMER_BLOCK = { xMin: 138, yMin: 58, xMax: 253, yMax: 108 };
+// Customer block sits on the right half — abuts the silhouette panel
+// edge-to-edge with no visible gap (Rick decided the paint-coloured
+// gap between them was distracting).
+const CUSTOMER_BLOCK = { xMin: 133, yMin: 58, xMax: 253, yMax: 108 };
 
-// Silhouette area mirrors the gap on its right edge so the two black
-// rectangles don't butt up against each other.
-const SILHOUETTE_BOX = { xMin: 18, yMin: 58, xMax: 128, yMax: 108 };
+// Silhouette area sits on the left half, abuts the customer block.
+const SILHOUETTE_BOX = { xMin: 18, yMin: 58, xMax: 133, yMax: 108 };
 
 // The actual silhouette image goes in the left half of the middle area.
-const SILHOUETTE_IMAGE_BOX = { xMin: 18, yMin: 58, xMax: 128, yMax: 108 };
+const SILHOUETTE_IMAGE_BOX = { xMin: 18, yMin: 58, xMax: 133, yMax: 108 };
 
 // Where each piece of customer text gets drawn. yFromTop is the BASELINE
 // of the text. yFromTop values are spread further apart so the three
