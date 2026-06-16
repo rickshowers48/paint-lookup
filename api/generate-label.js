@@ -596,6 +596,20 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
     font, paintName, TEXT_LAYOUT.paintName, CUSTOMER_BLOCK);
   const paintCodeLayout = computeTextLayout(
     font, paintCode, TEXT_LAYOUT.paintCode, CUSTOMER_BLOCK);
+  // Draw a slightly larger WHITE rectangle behind the customer block so a
+  // thin white border peeks out around all four edges of the black block.
+  // This keeps the customer block legible when the paint colour is BLACK
+  // (otherwise the black block blends into the black paint accents
+  // showing through the letter cut-outs and the whole panel disappears).
+  const BORDER = 0.8;  // border width in points
+  page.drawRectangle({
+    x: CUSTOMER_BLOCK.xMin - BORDER,
+    y: toY(CUSTOMER_BLOCK.yMax) - BORDER,
+    width: (CUSTOMER_BLOCK.xMax - CUSTOMER_BLOCK.xMin) + BORDER * 2,
+    height: (CUSTOMER_BLOCK.yMax - CUSTOMER_BLOCK.yMin) + BORDER * 2,
+    color: rgb(1, 1, 1),
+  });
+
   drawBlackBlockWithCutouts(page, CUSTOMER_BLOCK, [
     { text: paintName, fontSize: paintNameLayout.fontSize,
       x: paintNameLayout.x, y: paintNameLayout.y },
