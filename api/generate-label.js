@@ -546,6 +546,33 @@ async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
   const silhouette = await pdfDoc.embedPng(silhouetteBuf);
   const page = pdfDoc.getPage(0);
 
+  // 0) PAINT-COLOUR EDGE COVERAGE. The Canva master template leaves four
+  //    transparent zones around the silhouette+customer middle band:
+  //      - thin strip BELOW the top brand band  (y ≈ 51-58pt)
+  //      - thin strip ABOVE the bottom legal band (y ≈ 108-113pt)
+  //      - left margin (x ≈ 0-18pt)
+  //      - right margin (x ≈ 253-269.25pt)
+  //    On a clear-vinyl pen filled with paint, all four zones would show
+  //    paint colour, which Rick didn't want — he wants the label to read
+  //    as solid black with paint colour ONLY through the silhouette PNG's
+  //    transparent accents and the customer block's letter cut-outs.
+  //    Cover those four transparent zones with explicit black rectangles
+  //    BEFORE drawing anything else on top (the silhouette + customer
+  //    block come next, drawn on top of these covers).
+  const EDGE_BLACK_TOP    = { xMin: 0,   yMin: 49,  xMax: 269.25, yMax: 58  };
+  const EDGE_BLACK_BOTTOM = { xMin: 0,   yMin: 108, xMax: 269.25, yMax: 113 };
+  const EDGE_BLACK_LEFT   = { xMin: 0,   yMin: 49,  xMax: 18,     yMax: 113 };
+  const EDGE_BLACK_RIGHT  = { xMin: 253, yMin: 49,  xMax: 269.25, yMax: 113 };
+  for (const z of [EDGE_BLACK_TOP, EDGE_BLACK_BOTTOM, EDGE_BLACK_LEFT, EDGE_BLACK_RIGHT]) {
+    page.drawRectangle({
+      x: z.xMin,
+      y: toY(z.yMax),
+      width: z.xMax - z.xMin,
+      height: z.yMax - z.yMin,
+      color: rgb(0, 0, 0),
+    });
+  }
+
   // 1) Black CUSTOMER block (right half only) with cut-outs for:
   //       - paint name letter shapes (via fontkit glyph paths)
   //       - paint code letter shapes
