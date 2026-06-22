@@ -712,6 +712,100 @@ async function uploadToDropbox(pdfBuf, dropboxPath) {
   return res.json();
 }
 
+// ---- payload normalisation -----------------------------------------
+// We accept two payload shapes:
+//   A) Simple (ReqBin / curl / direct callers):
+//        { reg, paintName, paintCode, bodyType?, orderId? }
+//   B) Wix order webhook (set "Body params: Entire payload" in the
+//      Wix automation HTTP action). Wix sends the whole order object;
+//      our PaintMatch product stores per-line metadata as Wix
+//      "description lines" — five name+value pairs on the line item:
+//        Registration / Vehicle / Paint name / Paint code / Colour.
+//      We pull those out by name match (case-insensitive, fuzzy).
+
+function readDescLineName(dl) {
+  if (!dl || dl.name == null) return '';
+  if (typeof dl.name === 'string') return dl.name;
+  return dl.name.original || dl.name.translated || '';
+}
+function readDescLineValue(dl) {
+  if (!dl) return '';
+  if (typeof dl.plainText === 'string') return dl.plainText;
+  if (dl.plainText) return dl.plainText.original || dl.plainText.translated || '';
+  if (dl.colorInfo) return dl.colorInfo.original || dl.colorInfo.translated || '';
+  if (typeof dl.value === 'string') return dl.value;
+  return '';
+}
+function findInDescriptionLines(descLines, ...needles) {
+  if (!Array.isArray(descLines)) return null;
+  for (const dl of descLines) {
+    const name = readDescLineName(dl).toLowerCase().trim();
+    for (const needle of needles) {
+      if (name.includes(needle.toLowerCase())) {
+        const v = readDescLineValue(dl);
+        if (v) return v;
+      }
+    }
+  }
+  return null;
+}
+
+function extractFromWixPayload(body) {
+  // Wix nests the order in different places depending on the trigger
+  // version: top-level, body.order, body.data, body.entity, etc.
+  // Try the most common shapes in order.
+  const candidates = [
+    body,
+    body.order,
+    body.data,
+    body.entity,
+    body.payload,
+    body.event && body.event.data,
+  ];
+  let order = null;
+  for (const c of candidates) {
+    if (c && (c.lineItems || c.line_items)) { order = c; break; }
+  }
+  if (!order) return null;
+
+  const lineItems = order.lineItems || order.line_items || [];
+  if (!Array.isArray(lineItems) || lineItems.length === 0) return null;
+
+  const line = lineItems[0];   // PaintMatchPen orders are always 1 pen per line
+  const descLines = line.descriptionLines || line.description_lines || [];
+
+  const result = {
+    reg:       findInDescriptionLines(descLines, 'Registration', 'Reg'),
+    paintName: findInDescriptionLines(descLines, 'Paint name', 'PaintName'),
+    paintCode: findInDescriptionLines(descLines, 'Paint code', 'PaintCode'),
+    bodyType:  findInDescriptionLines(descLines, 'Body type', 'BodyType', 'Silhouette'),
+    vehicle:   findInDescriptionLines(descLines, 'Vehicle'),
+    orderId:   order.number || order.orderNumber || order.id || order._id || body.orderId || null,
+  };
+  return result;
+}
+
+// Best-effort body-type lookup. Calls the existing /api/lookup endpoint
+// on the same deployment with the registration, and tries to pull a
+// silhouette/body-type field out of whatever it returns. If anything
+// fails, returns null — the caller falls back to a default.
+async function lookupBodyTypeByReg(reg) {
+  try {
+    const url = `${publicBaseUrl()}/api/lookup?reg=${encodeURIComponent(reg)}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.bodyType
+        || data.body_type
+        || data.silhouette
+        || (data.vehicle && (data.vehicle.bodyType || data.vehicle.silhouette))
+        || (data.match && (data.match.bodyType || data.match.silhouette))
+        || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // ---- HTTP handler ---------------------------------------------------
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -727,14 +821,45 @@ module.exports = async function handler(req, res) {
       ? JSON.parse(req.body)
       : (req.body || {});
 
-    const { reg, paintName, paintCode, bodyType, orderId } = body;
-    if (!reg || !paintName || !paintCode || !bodyType) {
+    // Decide which payload shape this is. If the simple top-level fields
+    // are present, prefer them. Otherwise try Wix-order extraction.
+    let inputs = null;
+    if (body.reg && body.paintName && body.paintCode) {
+      inputs = {
+        reg: body.reg,
+        paintName: body.paintName,
+        paintCode: body.paintCode,
+        bodyType: body.bodyType || null,
+        orderId: body.orderId || null,
+      };
+    } else {
+      inputs = extractFromWixPayload(body);
+    }
+
+    if (!inputs || !inputs.reg || !inputs.paintName || !inputs.paintCode) {
       return res.status(400).json({
         error: 'missing_fields',
-        required: ['reg', 'paintName', 'paintCode', 'bodyType'],
+        required: ['reg', 'paintName', 'paintCode'],
+        got: inputs,
+        hint: 'Send either {reg,paintName,paintCode,bodyType} directly, ' +
+              'or a Wix order payload with description lines named ' +
+              '"Registration","Paint name","Paint code".',
       });
     }
 
+    // bodyType resolution chain:
+    //   1. caller provided it explicitly
+    //   2. found in Wix description lines (rare — Body type isn't typically there)
+    //   3. lookup via /api/lookup using the reg
+    //   4. fallback default — the pipeline never crashes on a missing body
+    if (!inputs.bodyType && inputs.reg) {
+      inputs.bodyType = await lookupBodyTypeByReg(inputs.reg);
+    }
+    if (!inputs.bodyType) {
+      inputs.bodyType = 'suv-family';
+    }
+
+    const { reg, paintName, paintCode, bodyType, orderId } = inputs;
     const pdfBuf = await generateLabelPdf({ reg, paintName, paintCode, bodyType });
 
     const today = new Date().toISOString().slice(0, 10);
@@ -744,7 +869,11 @@ module.exports = async function handler(req, res) {
 
     await uploadToDropbox(pdfBuf, dropboxPath);
 
-    return res.status(200).json({ ok: true, dropboxPath });
+    return res.status(200).json({
+      ok: true,
+      dropboxPath,
+      resolved: { reg, paintName, paintCode, bodyType, orderId },
+    });
   } catch (err) {
     console.error('[generate-label]', err);
     return res.status(500).json({ error: 'generation_failed', message: err.message });
