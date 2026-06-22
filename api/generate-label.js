@@ -821,6 +821,15 @@ module.exports = async function handler(req, res) {
       ? JSON.parse(req.body)
       : (req.body || {});
 
+    // Log the inbound payload (top-level keys + a structural snapshot) so
+    // we can see what Wix actually sends. Truncate to 4KB so we don't
+    // explode the log on huge orders.
+    try {
+      const peek = JSON.stringify(body).slice(0, 4000);
+      console.log('[generate-label] inbound body keys =', Object.keys(body || {}));
+      console.log('[generate-label] inbound body (first 4KB) =', peek);
+    } catch (e) { /* swallow */ }
+
     // Decide which payload shape this is. If the simple top-level fields
     // are present, prefer them. Otherwise try Wix-order extraction.
     let inputs = null;
