@@ -789,6 +789,40 @@ function extractFromWixPayload(body) {
   return result;
 }
 
+// Translates the short categorical silhouetteKey that /api/lookup
+// returns (one of: suv, hatchback, saloon, estate, coupe, convertible,
+// mpv, pickup, van, sportscar) into a specific silhouette filename
+// that actually exists in public/silhouettes/. Without this mapping
+// "hatchback" / "suv" / "coupe" all 404 and fall back to suv-family,
+// which is why every label was coming out with the same shape.
+function mapShortKeyToSilhouetteFile(key) {
+  if (!key) return null;
+  const k = String(key).toLowerCase().trim();
+  // Exact match — the silhouette file already exists under this name.
+  const EXACT = new Set([
+    'citycar', 'convertible', 'estate', 'mpv', 'pickup', 'saloon', 'van',
+    'coupe-fastback','coupe-hatch','coupe-long','coupe-sleek','coupe-sloped','coupe-sport',
+    'crossover-medium','crossover-small',
+    'hatchback-3door','hatchback-boxy','hatchback-compact','hatchback-hot','hatchback-low',
+    'hatchback-mini','hatchback-raised','hatchback-small','hatchback-spoiler','hatchback-sport',
+    'pickup-small','saloon-executive',
+    'sportscar-coupe','sportscar-low','sportscar-roadster',
+    'suv-boxy','suv-compact','suv-family','suv-luxury','suv-modern','suv-rugged','suv-tall',
+    'van-delivery',
+  ]);
+  if (EXACT.has(k)) return k;
+  // Short category from /api/lookup → most representative specific file.
+  const SHORT_TO_FILE = {
+    suv:         'suv-family',
+    hatchback:   'hatchback-small',
+    coupe:       'coupe-fastback',
+    sportscar:   'sportscar-coupe',
+    crossover:   'crossover-medium',
+  };
+  if (SHORT_TO_FILE[k]) return SHORT_TO_FILE[k];
+  return k; // pass through anything we don't recognise; loadSilhouette has its own fallback
+}
+
 // Best-effort body-type lookup. Calls the existing /api/lookup endpoint
 // on the same deployment with the registration, and tries to pull a
 // silhouette/body-type field out of whatever it returns. If anything
@@ -879,9 +913,13 @@ module.exports = async function handler(req, res) {
     if (!inputs.bodyType && inputs.reg) {
       inputs.bodyType = await lookupBodyTypeByReg(inputs.reg);
     }
+    // Map short category keys (e.g. "suv", "hatchback") that lookup
+    // returns into specific silhouette filenames that actually exist.
+    inputs.bodyType = mapShortKeyToSilhouetteFile(inputs.bodyType);
     if (!inputs.bodyType) {
       inputs.bodyType = 'suv-family';
     }
+    console.log('[generate-label] resolved bodyType =', inputs.bodyType);
 
     const { reg, paintName, paintCode, bodyType, orderId } = inputs;
     const pdfBuf = await generateLabelPdf({ reg, paintName, paintCode, bodyType });
