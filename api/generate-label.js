@@ -795,11 +795,22 @@ function extractFromWixPayload(body) {
 // fails, returns null — the caller falls back to a default.
 async function lookupBodyTypeByReg(reg) {
   try {
-    const url = `${publicBaseUrl()}/api/lookup?reg=${encodeURIComponent(reg)}`;
-    const res = await fetch(url);
+    // /api/lookup is POST-only and expects { vrm: "AB12CDE" } in the body.
+    const url = `${publicBaseUrl()}/api/lookup`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vrm: reg }),
+    });
     if (!res.ok) return null;
     const data = await res.json();
-    return data.bodyType
+    // /api/lookup returns the silhouette filename under "silhouetteKey"
+    // (see lookup.js → pickSilhouetteKey). That's the one we actually
+    // want to plug into generateLabelPdf({bodyType: ...}) because the
+    // silhouette PNGs are named exactly like the silhouetteKey values
+    // (estate.png, hatchback-small.png, suv-family.png, etc.).
+    return data.silhouetteKey
+        || data.bodyType
         || data.body_type
         || data.silhouette
         || (data.vehicle && (data.vehicle.bodyType || data.vehicle.silhouette))
