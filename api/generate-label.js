@@ -730,6 +730,10 @@ function readDescLineName(dl) {
 }
 function readDescLineValue(dl) {
   if (!dl) return '';
+  // Wix's flat shape (the one actually used by their Order webhook):
+  //   { name: "Registration", description: "BU23CRK" }
+  if (typeof dl.description === 'string') return dl.description;
+  // Other shapes Wix has used / their docs reference:
   if (typeof dl.plainText === 'string') return dl.plainText;
   if (dl.plainText) return dl.plainText.original || dl.plainText.translated || '';
   if (dl.colorInfo) return dl.colorInfo.original || dl.colorInfo.translated || '';
@@ -872,6 +876,25 @@ module.exports = async function handler(req, res) {
     const pdfBuf = await generateLabelPdf({ reg, paintName, paintCode, bodyType });
 
     const today = new Date().toISOString().slice(0, 10);
+    const safeReg = String(reg).replace(/\s+/g, '').toUpperCase();
+    const suffix = orderId ? `-${String(orderId).replace(/[^a-z0-9-]/gi, '')}` : '';
+    const dropboxPath = `/PaintMatchPen/Orders/${today}/${safeReg}${suffix}.pdf`;
+
+    await uploadToDropbox(pdfBuf, dropboxPath);
+
+    return res.status(200).json({
+      ok: true,
+      dropboxPath,
+      resolved: { reg, paintName, paintCode, bodyType, orderId },
+    });
+  } catch (err) {
+    console.error('[generate-label]', err);
+    return res.status(500).json({ error: 'generation_failed', message: err.message });
+  }
+};
+
+module.exports.generateLabelPdf = generateLabelPdf;
+nst today = new Date().toISOString().slice(0, 10);
     const safeReg = String(reg).replace(/\s+/g, '').toUpperCase();
     const suffix = orderId ? `-${String(orderId).replace(/[^a-z0-9-]/gi, '')}` : '';
     const dropboxPath = `/PaintMatchPen/Orders/${today}/${safeReg}${suffix}.pdf`;
