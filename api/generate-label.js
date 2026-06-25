@@ -907,14 +907,12 @@ module.exports = async function handler(req, res) {
 
     // bodyType resolution chain:
     //   1. caller provided it explicitly
-    //   2. found in Wix description lines (rare — Body type isn't typically there)
+    //   2. found in Wix description lines (rare)
     //   3. lookup via /api/lookup using the reg
     //   4. fallback default — the pipeline never crashes on a missing body
     if (!inputs.bodyType && inputs.reg) {
       inputs.bodyType = await lookupBodyTypeByReg(inputs.reg);
     }
-    // Map short category keys (e.g. "suv", "hatchback") that lookup
-    // returns into specific silhouette filenames that actually exist.
     inputs.bodyType = mapShortKeyToSilhouetteFile(inputs.bodyType);
     if (!inputs.bodyType) {
       inputs.bodyType = 'suv-family';
@@ -938,6 +936,12 @@ module.exports = async function handler(req, res) {
     });
   } catch (err) {
     console.error('[generate-label]', err);
+    return res.status(500).json({ error: 'generation_failed', message: err.message });
+  }
+};
+
+module.exports.generateLabelPdf = generateLabelPdf;
+or('[generate-label]', err);
     return res.status(500).json({ error: 'generation_failed', message: err.message });
   }
 };
