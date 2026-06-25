@@ -566,24 +566,132 @@ function pickBestImage(candidates, customerColour, customerPaintName, reg) {
 // Body types from real APIs are inconsistent — we match on contains
 // rather than equals so things like "PANEL VAN" and "VAN" both work.
 
+// MODEL → silhouette key. Most-specific reliable signal: if we recognise
+// the model name, ignore the body-type string and use this.
+const MODEL_TO_SILHOUETTE = {
+  // ===== City cars (small, tall, blocky) =====
+  PICANTO: "citycar", AYGO: "citycar", I10: "citycar", "UP!": "citycar", UP: "citycar",
+  TWINGO: "citycar", PANDA: "citycar", "500": "citycar", "108": "citycar",
+  C1: "citycar", MII: "citycar", FORTWO: "citycar", FORFOUR: "citycar",
+  KA: "citycar", "KA+": "citycar", ALTO: "citycar", CELERIO: "citycar",
+  GO: "citycar", "GO+": "citycar", SPARK: "citycar", I3: "citycar",
+  // ===== Small / mid hatchbacks =====
+  FIESTA: "hatchback", POLO: "hatchback", CORSA: "hatchback", IBIZA: "hatchback",
+  CLIO: "hatchback", MICRA: "hatchback", "208": "hatchback", "308": "hatchback",
+  I20: "hatchback", I30: "hatchback", RIO: "hatchback", JAZZ: "hatchback",
+  FABIA: "hatchback", SWIFT: "hatchback", BALENO: "hatchback", SANDERO: "hatchback",
+  YARIS: "hatchback", AURIS: "hatchback", GOLF: "hatchback", FOCUS: "hatchback",
+  ASTRA: "hatchback", LEON: "hatchback", MEGANE: "hatchback", PEUGEOT: "hatchback",
+  CIVIC: "hatchback", PULSAR: "hatchback", "1 SERIES": "hatchback",
+  "A-CLASS": "hatchback", A1: "hatchback", A3: "hatchback", MINI: "hatchback",
+  COOPER: "hatchback",
+  // ===== SUVs / crossovers / "soft-roaders" =====
+  XC40: "suv", XC60: "suv", XC70: "suv", XC90: "suv",
+  Q2: "suv", Q3: "suv", Q4: "suv", Q5: "suv", Q7: "suv", Q8: "suv",
+  X1: "suv", X2: "suv", X3: "suv", X4: "suv", X5: "suv", X6: "suv", X7: "suv",
+  QASHQAI: "suv", JUKE: "suv", "X-TRAIL": "suv", ARIYA: "suv",
+  SPORTAGE: "suv", SORENTO: "suv", STONIC: "suv", NIRO: "suv", EV6: "suv",
+  TUCSON: "suv", KONA: "suv", BAYON: "suv", IONIQ5: "suv",
+  RAV4: "suv", "C-HR": "suv", CHR: "suv", "YARIS CROSS": "suv",
+  "CR-V": "suv", "HR-V": "suv", "ZR-V": "suv", PILOT: "suv",
+  TIGUAN: "suv", TOUAREG: "suv", "T-ROC": "suv", "T-CROSS": "suv", "ID.4": "suv",
+  ATECA: "suv", ARONA: "suv", TARRACO: "suv",
+  KAROQ: "suv", KAMIQ: "suv", KODIAQ: "suv", ENYAQ: "suv",
+  GLA: "suv", GLB: "suv", GLC: "suv", GLE: "suv", GLS: "suv", EQA: "suv", EQB: "suv",
+  DISCOVERY: "suv", DEFENDER: "suv", FREELANDER: "suv", EVOQUE: "suv", VELAR: "suv",
+  C40: "suv", // Volvo coupe-style SUV
+  CAPTUR: "suv", KADJAR: "suv", ARKANA: "suv",
+  MOKKA: "suv", GRANDLAND: "suv", CROSSLAND: "suv",
+  PUMA: "suv", KUGA: "suv", EDGE: "suv", ECOSPORT: "suv",
+  "2008": "suv", "3008": "suv", "5008": "suv",
+  OUTBACK: "suv", FORESTER: "suv", XV: "suv",
+  "CX-3": "suv", "CX-5": "suv", "CX-30": "suv", "CX-60": "suv",
+  "MODEL Y": "suv", "MODEL X": "suv",
+  // ===== Saloons =====
+  "MODEL 3": "saloon", "MODEL S": "saloon",
+  A4: "saloon", A6: "saloon", A8: "saloon",
+  "3 SERIES": "saloon", "5 SERIES": "saloon", "7 SERIES": "saloon",
+  "C-CLASS": "saloon", "E-CLASS": "saloon", "S-CLASS": "saloon",
+  PASSAT: "saloon", JETTA: "saloon", SUPERB: "saloon", OCTAVIA: "saloon",
+  INSIGNIA: "saloon", MONDEO: "saloon", "I40": "saloon",
+  // ===== MPVs / large family carriers =====
+  GALAXY: "mpv", "S-MAX": "mpv", ZAFIRA: "mpv", VERSO: "mpv",
+  ALHAMBRA: "mpv", SHARAN: "mpv", PICASSO: "mpv", BERLINGO: "mpv",
+  TOURAN: "mpv", "B-MAX": "mpv", "C-MAX": "mpv", PRIUS: "mpv",
+  // ===== Vans (commercial / passenger) =====
+  CADDY: "van", TRANSPORTER: "van", TRANSIT: "van", TRAFIC: "van",
+  VIVARO: "van", PARTNER: "van", DOBLO: "van", CONNECT: "van",
+  "MASTER": "van", DUCATO: "van", BOXER: "van", SPRINTER: "van",
+  // ===== Pickups =====
+  HILUX: "pickup", RANGER: "pickup", "D-MAX": "pickup", L200: "pickup",
+  AMAROK: "pickup", NAVARA: "pickup",
+  // ===== Coupes / sports / convertibles =====
+  "MX-5": "convertible", BOXSTER: "convertible", Z4: "convertible",
+  TT: "coupe", GR86: "coupe", GT86: "coupe", SUPRA: "coupe",
+  "911": "coupe", CAYMAN: "coupe", "718": "coupe", GT4: "coupe",
+};
+
+// Maps DVLA/VDG body type strings + model name to a small set of
+// silhouette keys. The frontend uses this key to pick which SVG car
+// shape to display behind the paint preview, AND the label generator
+// uses it to pick the right printed silhouette.
+//
+// Two-stage resolution: 1) try model-name table (most reliable signal),
+// 2) fall back to keyword matching on the body-type string from the API.
 function pickSilhouetteKey(bodyType, model) {
-  const bt = (bodyType || "").toUpperCase();
-  const md = (model || "").toUpperCase();
+  const bt = (bodyType || "").toUpperCase().trim();
+  const md = (model || "").toUpperCase().trim();
 
-  // SUV first because Volvo XC models sometimes report as something else
-  if (md.includes("XC") || md.includes("Q3") || md.includes("Q5") || md.includes("Q7")) return "suv";
-  if (bt.includes("SUV") || bt.includes("CROSSOVER")) return "suv";
+  // --- Stage 1: model-name table -----------------------------------
+  // Try exact match first, then first word (e.g. "PICANTO SE AUTO" → PICANTO),
+  // then substring (e.g. "QASHQAI ACENTA PREMIUM" contains QASHQAI).
+  if (MODEL_TO_SILHOUETTE[md]) return MODEL_TO_SILHOUETTE[md];
+  const firstWord = md.split(/\s+/)[0];
+  if (firstWord && MODEL_TO_SILHOUETTE[firstWord]) return MODEL_TO_SILHOUETTE[firstWord];
+  for (const key of Object.keys(MODEL_TO_SILHOUETTE)) {
+    if (md.includes(key)) return MODEL_TO_SILHOUETTE[key];
+  }
 
-  if (bt.includes("HATCHBACK")) return "hatchback";
-  if (bt.includes("SALOON") || bt.includes("SEDAN")) return "saloon";
-  if (bt.includes("ESTATE") || bt.includes("WAGON") || bt.includes("TOURER")) return "estate";
-  if (bt.includes("COUPE")) return "coupe";
-  if (bt.includes("CONVERTIBLE") || bt.includes("CABRIOLET") || bt.includes("ROADSTER")) return "convertible";
-  if (bt.includes("MPV") || bt.includes("MULTI")) return "mpv";
-  if (bt.includes("PICK")) return "pickup";
-  if (bt.includes("VAN")) return "van";
+  // --- Stage 2: body-type keyword matching (now much more thorough) -----
+  // SUV / crossover
+  if (bt.includes("SUV") || bt.includes("CROSSOVER") || bt.includes("4X4") ||
+      bt.includes("OFF ROAD") || bt.includes("OFF-ROAD") ||
+      bt.includes("SPORT UTILITY")) return "suv";
+  // City car (DVLA sometimes uses these wordings explicitly)
+  if (bt.includes("CITY") || bt.includes("MINI CAR") ||
+      bt.includes("SMALL CAR")) return "citycar";
+  // Hatchback variants — catch "5 DOOR HATCH", "3-DOOR HATCH", etc.
+  if (bt.includes("HATCH") || bt.includes("5 DOOR") || bt.includes("3 DOOR") ||
+      bt.includes("5-DOOR") || bt.includes("3-DOOR") ||
+      bt.includes("HATCHBACK")) return "hatchback";
+  // Saloon
+  if (bt.includes("SALOON") || bt.includes("SEDAN") ||
+      bt.includes("4 DOOR") || bt.includes("4-DOOR")) return "saloon";
+  // Estate / wagon
+  if (bt.includes("ESTATE") || bt.includes("WAGON") || bt.includes("TOURER") ||
+      bt.includes("AVANT") || bt.includes("TOURING")) return "estate";
+  // Coupe
+  if (bt.includes("COUPE") || bt.includes("COUPÉ") ||
+      bt.includes("FASTBACK")) return "coupe";
+  // Convertible
+  if (bt.includes("CONVERTIBLE") || bt.includes("CABRIOLET") ||
+      bt.includes("CABRIO") || bt.includes("ROADSTER") ||
+      bt.includes("SPYDER") || bt.includes("SPIDER")) return "convertible";
+  // MPV / people carrier
+  if (bt.includes("MPV") || bt.includes("MULTI") ||
+      bt.includes("PEOPLE CARRIER") || bt.includes("MINIVAN") ||
+      bt.includes("MINI VAN")) return "mpv";
+  // Pickup
+  if (bt.includes("PICK") || bt.includes("CREW CAB") ||
+      bt.includes("DOUBLE CAB") || bt.includes("EXTRA CAB")) return "pickup";
+  // Van (after MPV/pickup to avoid overlap)
+  if (bt.includes("VAN") || bt.includes("PANEL")) return "van";
 
-  return "saloon"; // sensible default — most cars on UK roads
+  // --- Stage 3: fallback default -----------------------------------
+  // "hatchback" is the most accurate default for UK roads — Polo/Fiesta/
+  // Corsa-class cars are by far the most common fleet shape and we'd
+  // sooner mis-show a hatchback than a saloon for an unknown car.
+  return "hatchback";
 }
 
 // ============================================================
@@ -744,20 +852,12 @@ module.exports = async (req, res) => {
     console.log(`LIVE lookup: ${reg}`);
 
     // ---------- 4. PARALLEL DVLA + VDG (paint) ----------
-    // Used to also fire lookupVDGImage(reg) in parallel here — dropped
-    // 30 May 2026 because Rick chose to use body-type silhouettes for
-    // EVERY result (visual consistency across the brand). VDG-Image
-    // costs ~£0.02 per call so this saves real money. The function is
-    // still defined below in case we change our mind.
     const [dvla, vdg] = await Promise.all([
       lookupDVLA(reg),
       lookupVDG(reg),
     ]);
-    const imageCandidates = null; // kept as a stub so downstream code unchanged
+    const imageCandidates = null;
 
-    // If BOTH APIs gave us nothing, we genuinely don't know what's wrong:
-    // could be a typo, could be a service hiccup, could be an obscure car.
-    // We don't cache this — the customer might just have mistyped.
     if (!dvla && !vdg) {
       return res.status(200).json({
         ok: false,
@@ -769,8 +869,6 @@ module.exports = async (req, res) => {
     }
 
     // ---------- 5. MERGE DATA ----------
-    // VDG wins on overlapping fields (it knows paint stuff).
-    // DVLA fills in year (VDG doesn't provide year).
     const make = vdg?.make || dvla?.make || null;
     const model = vdg?.model || null;
     const colour = vdg?.colour || dvla?.colour || null;
@@ -779,29 +877,11 @@ module.exports = async (req, res) => {
     const bodyType = vdg?.bodyType || dvla?.bodyType || null;
     const paintCode = vdg?.paintCode || null;
     const paintName = vdg?.paintName || null;
-    // paintHex will be null for now (VDG probably doesn't return it).
-    // The widget's name-to-hex palette is the fallback. Once Rick adds
-    // hex codes to his Google Sheets formula database, formula.js will
-    // surface them and the swatch will be exact per paint code.
     const paintHex = vdg?.paintHex || null;
 
-    // ---------- 5b. PICK A COLOUR-MATCHING IMAGE ----------
-    // Now that we know the customer's actual colour, filter VDG's image
-    // candidates and pick one whose Description matches. If no image
-    // matches the colour, we return null — the frontend will fall back
-    // to a body-type silhouette filled with the customer's actual paint
-    // colour, which is always right by construction.
     const imageUrl = pickBestImage(imageCandidates, colour, paintName, reg);
 
     // ---------- 6. NO PAINT CODE? ----------
-    // Two very different reasons we get here, must not be conflated:
-    //   (a) VDG had a transient failure (timeout/5xx/network blip) and
-    //       returned null. This is NOT "car not supported" — do NOT cache.
-    //       Return a soft try-again so a retry can succeed.
-    //   (b) VDG actually answered and confirmed it has no paint data for
-    //       this vehicle (common for vans, commercials, obscure imports).
-    //       This IS legitimate — cache negatively for 7 days to save VDG
-    //       budget on repeat lookups.
     if (!paintCode) {
       const vdgSucceeded = vdg !== null;
 
@@ -812,6 +892,67 @@ module.exports = async (req, res) => {
           status: "lookup_unavailable",
           message:
             "Paint lookup service is having a moment. Please try again in a few seconds.",
+          vrm: reg,
+          vehicle: { make, model, colour, year, fuelType, bodyType },
+        });
+      }
+
+      const noPaint = {
+        ok: false,
+        status: "paint_not_found",
+        message:
+          "We found your vehicle but couldn't auto-match the paint code. You can enter your paint code manually.",
+        vrm: reg,
+        vehicle: { make, model, colour, year, fuelType, bodyType },
+        silhouetteKey: pickSilhouetteKey(bodyType, model),
+        imageUrl: imageUrl || null,
+        fromCache: false,
+      };
+      await setCached(reg, noPaint, true);
+      return res.status(200).json(noPaint);
+    }
+
+    // ---------- 7. FORMULA ----------
+    let formulaResult = { formula: [], status: "unknown", batchSizeMl: 10, paintName: "", hex: "" };
+    try {
+      formulaResult = await getFormula({ paintCode, brand: make });
+    } catch (err) {
+      console.error("Formula lookup threw unexpectedly:", err);
+    }
+
+    const finalHex = paintHex || formulaResult.hex || null;
+    const finalPaintName = paintName || formulaResult.paintName || null;
+
+    // ---------- 8. RESPONSE ----------
+    const responseData = {
+      ok: true,
+      status: "found",
+      vrm: reg,
+      vehicle: { make, model, colour, year, fuelType, bodyType },
+      silhouetteKey: pickSilhouetteKey(bodyType, model),
+      imageUrl: imageUrl || null,
+      paintCode,
+      paintName: finalPaintName,
+      paintHex: finalHex,
+      formula: formulaResult.formula || [],
+      formulaStatus: formulaResult.status || "unknown",
+      batchSizeMl: formulaResult.batchSizeMl || 10,
+      fromCache: false,
+    };
+
+    await setCached(reg, responseData, false);
+
+    return res.status(200).json(responseData);
+  } catch (err) {
+    console.error("Lookup fatal error:", err);
+    return res.status(500).json({
+      ok: false,
+      status: "server_error",
+      error: "Unexpected error",
+    });
+  }
+};
+ving a moment. Please try again in a few seconds.",
           vrm: reg,
           vehicle: { make, model, colour, year, fuelType, bodyType },
         });
