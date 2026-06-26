@@ -941,9 +941,3 @@ module.exports = async function handler(req, res) {
 };
 
 module.exports.generateLabelPdf = generateLabelPdf;
-or('[generate-label]', err);
-    return res.status(500).json({ error: 'generation_failed', message: err.message });
-  }
-};
-
-module.exports.generateLabelPdf = generateLabelPdf;
