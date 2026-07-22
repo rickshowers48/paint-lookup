@@ -251,14 +251,25 @@ function emitSilhouettePathPS(bodyType, box) {
 }
 
 // Centre a text string within TEXT_ZONE, auto-shrinking if it's too
-// wide. Returns { x, fontSize } — y is fixed by the layout row.
+// wide. Returns { x, fontSize, baselineY }.
+//
+// When the text has auto-shrunk (fontSize < layout.fontSize), the
+// baseline is raised so the SHRUNKEN text stays vertically aligned
+// with where a full-size render would sit — i.e. the visual centre of
+// the row is pinned regardless of shrink. Without this, long paint
+// names that shrink appear to "drop" toward the code below because
+// their cap-height reduces but their baseline doesn't move.
+// Archivo Black cap-height ≈ 0.72 * fontSize.
 function layoutCenteredText(fkFont, text, layout) {
   const zoneW = TEXT_ZONE.xMax - TEXT_ZONE.xMin;
   const maxW = zoneW - 2;   // 1pt breathing room each side
   const fontSize = fitFontSize(fkFont, text, layout.fontSize, maxW);
   const textW = widthOfTextAtSize(fkFont, text, fontSize);
   const x = TEXT_ZONE.xMin + (zoneW - textW) / 2;
-  return { x, fontSize };
+  const capFull = 0.72 * layout.fontSize;
+  const capShrunk = 0.72 * fontSize;
+  const baselineY = layout.baselineY + (capFull - capShrunk) / 2;
+  return { x, fontSize, baselineY };
 }
 
 // ---- EPS generation -------------------------------------------------
@@ -273,11 +284,11 @@ function buildEps({ reg, paintName, paintCode, bodyType, fkFont }) {
 
   const silhouettePS = emitSilhouettePathPS(bodyType, SILHOUETTE_BOX);
   const regPS  = emitGlyphPathPS(fkFont, regStr,  regFit.fontSize,
-                                 regFit.x,  TEXT_LAYOUT.reg.baselineY);
+                                 regFit.x,  regFit.baselineY);
   const namePS = emitGlyphPathPS(fkFont, nameStr, nameFit.fontSize,
-                                 nameFit.x, TEXT_LAYOUT.paintName.baselineY);
+                                 nameFit.x, nameFit.baselineY);
   const codePS = emitGlyphPathPS(fkFont, codeStr, codeFit.fontSize,
-                                 codeFit.x, TEXT_LAYOUT.paintCode.baselineY);
+                                 codeFit.x, codeFit.baselineY);
 
   // BoundingBox integers must round OUTWARD (spec: fully contain the
   // artwork). HiResBoundingBox is the true float value.
