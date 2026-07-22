@@ -61,16 +61,15 @@ const MM = 2.83464567;
 const PAGE = { width: 95 * MM, height: 18 * MM };  // 269.29 × 51.02 pt
 
 // Silhouette sits on the left, text zone on the right.
-// Silhouette gets a generous zone so the car reads as the hero visual
-// — bumped from 22mm to 30mm wide, and vertical margins tightened so
-// the silhouette fills more of the 18mm strip height.
+// Silhouette treated as the HERO visual — 42mm wide, near-full height.
+// Iterated up from 22 → 30 → 42mm as Rick fed back samples.
 const MARGIN = 2 * MM;                       // 2mm side margins
-const SILHOUETTE_VMARGIN = 1 * MM;           // tighter top/bottom
+const SILHOUETTE_VMARGIN = 0.5 * MM;         // very tight top/bottom
 const SILHOUETTE_BOX = {
   xMin: MARGIN,
-  xMax: MARGIN + 30 * MM,                    // 30mm wide silhouette
+  xMax: MARGIN + 42 * MM,                    // 42mm wide silhouette
   yMin: SILHOUETTE_VMARGIN,
-  yMax: PAGE.height - SILHOUETTE_VMARGIN,    // ~16mm tall
+  yMax: PAGE.height - SILHOUETTE_VMARGIN,    // ~17mm tall
 };
 const TEXT_ZONE = {
   xMin: SILHOUETTE_BOX.xMax + 2 * MM,        // 2mm gap after silhouette
