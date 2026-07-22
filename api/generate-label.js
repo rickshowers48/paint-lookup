@@ -1,157 +1,50 @@
 /**
  * POST /api/generate-label
  *
- * Generates a print-ready pen label PDF for a single order and uploads
- * it to Dropbox at PaintMatchPen/Orders/YYYY-MM-DD/<REG>.pdf.
+ * Generates a print-ready CLEAR OVERLAY sticker for a single order and
+ * uploads it to Dropbox at PaintMatchPen/Orders/YYYY-MM-DD/REG-<VRM>.eps.
+ *
+ * This produces Ari's spec: a 95mm × 18mm EPS file with black ink only
+ * (CMYK 100% K) that gets printed on clear film. The silhouette, reg,
+ * paint name and paint code are all KNOCKOUTS in the black — the pen
+ * barrel's own paint colour shows through those shapes.
+ *
+ * Ari's confirmed spec:
+ *   Dimensions      95mm × 18mm
+ *   Bleed           None
+ *   Safe zone       Full canvas usable
+ *   Format          EPS
+ *   Text            Outlined (all glyphs as paths, no live fonts)
+ *   Colour          CMYK 100% K
+ *   File naming     REG-<VRM>.eps
+ *   Delivery        Existing Dropbox folder
  *
  * Request body (JSON):
  *   {
- *     "reg":       "KD19 MYY",
- *     "paintName": "Denim Blue",
- *     "paintCode": "723",
- *     "bodyType":  "suv-family",   // matches one of the 38 silhouette filenames
- *     "orderId":   "wix-order-12345" // optional, used in filename
+ *     "reg":       "BG24URO",
+ *     "paintName": "Graphite Grey",
+ *     "paintCode": "5X",
+ *     "bodyType":  "hatchback-small",
+ *     "orderId":   "wix-order-12345"   // optional, appended to filename
  *   }
  *
  * Response (JSON):
- *   { ok: true, dropboxPath: "/PaintMatchPen/Orders/2026-06-10/KD19MYY.pdf" }
+ *   { ok: true, dropboxPath: "/PaintMatchPen/Orders/2026-07-20/REG-BG24URO.eps" }
  *
- * Asset loading strategy:
- *   - canva-template.pdf is read from the same directory as this file
- *     (i.e. api/canva-template.pdf). Vercel bundles sibling files with
- *     the function automatically, so no vercel.json includeFiles is
- *     needed for the template.
- *   - Silhouette PNGs are fetched over HTTP from the deployment's
- *     own public/ directory (which Vercel auto-serves at root). The
- *     base URL falls back to VERCEL_URL if PUBLIC_BASE_URL isn't set.
- *
- * Env vars used on Vercel:
- *   DROPBOX_TOKEN      short-lived OAuth access token (rotate via
- *                      refresh-token flow in production)
- *   PUBLIC_BASE_URL    optional, e.g. "https://paint-lookup.vercel.app".
- *                      Falls back to VERCEL_URL (auto-set by Vercel) or
- *                      a hardcoded default.
+ * Env vars:
+ *   DROPBOX_TOKEN     short-lived OAuth token (rotate via refresh flow)
+ *   PUBLIC_BASE_URL   optional, e.g. "https://paint-lookup.vercel.app"
  */
 
-const { PDFDocument, rgb } = require('pdf-lib');
-
-// Silhouette body paths (vector data extracted from the 38 SVG silhouettes).
-// Each entry: { vb, bounds:[xMin,yMin,xMax,yMax], commands:[[op, ...coords], ...] }
-// where commands use M/L/C/H absolute and coords are in the SVG viewBox
-// space. We bundle this so the silhouette body shape can be cut OUT of
-// the black middle background (paint shows through the body interior on
-// clear vinyl).
-let SILHOUETTE_PATHS = {};
-try { SILHOUETTE_PATHS = require('./silhouette-paths.json'); } catch (e) {}
-
-// ---- PDFOperator + PDFNumber for raw operator construction --------
-// Required for both stroke-only text rendering and the compound-path
-// cut-out clipping. We try the top-level barrel first, then deep paths.
-let RawPDFOperator = null;
-let RawPDFNumber = null;
-try {
-  const p = require('pdf-lib');
-  RawPDFOperator = p.PDFOperator;
-  RawPDFNumber = p.PDFNumber;
-} catch (e) {}
-if (!RawPDFOperator || typeof RawPDFOperator.of !== 'function') {
-  try {
-    const m = require('pdf-lib/cjs/core/operators/PDFOperator');
-    RawPDFOperator = m.default || m;
-  } catch (e) {}
-}
-if (!RawPDFNumber || typeof RawPDFNumber.of !== 'function') {
-  try {
-    const m = require('pdf-lib/cjs/core/objects/PDFNumber');
-    RawPDFNumber = m.default || m;
-  } catch (e) {}
-}
-
-// ---- stroke-only text setup ----------------------------------------
-// True PDF stroke-only text requires three operators set BEFORE
-// page.drawText runs: stroke colour (RG), line width (w), and text
-// rendering mode (Tr=1). pdf-lib's drawText doesn't reset Tr, so the
-// state set in the surrounding graphics state propagates into its BT/ET.
-//
-// We try TWO paths to get those operators:
-//   1. High-level factories from pdf-lib (top-level barrel or deep import)
-//   2. Raw PDFOperator.of(...) construction with literal operator names
-//
-// Whichever yields *defined* values gets used at runtime. If both end
-// up undefined, the halo fallback kicks in. None of this can throw at
-// module load — every step is in a try/catch.
-
-let strokeFactories = null;
-let strokeManual = null;
-
-try {
-  let TextRenderingMode, setTextRenderingMode, setStrokingColor, setLineWidth;
-  try {
-    // Deep imports: most likely path that actually has these in v1.17.1.
-    const ts = require('pdf-lib/cjs/api/operators/text-state');
-    const gs = require('pdf-lib/cjs/api/operators/graphics-state');
-    TextRenderingMode = ts.TextRenderingMode;
-    setTextRenderingMode = ts.setTextRenderingMode;
-    setStrokingColor = gs.setStrokingColor;
-    setLineWidth = gs.setLineWidth;
-  } catch (eDeep) {
-    // Fall back to top-level barrel.
-    const p = require('pdf-lib');
-    TextRenderingMode = p.TextRenderingMode;
-    setTextRenderingMode = p.setTextRenderingMode;
-    setStrokingColor = p.setStrokingColor;
-    setLineWidth = p.setLineWidth;
-  }
-  if (typeof setTextRenderingMode === 'function'
-      && typeof setStrokingColor === 'function'
-      && typeof setLineWidth === 'function'
-      && TextRenderingMode
-      // pdf-lib v1.17.1 spells the stroke mode "Outline"; older docs called
-      // it "Stroke". Accept whichever the installed version exports.
-      && (TextRenderingMode.Outline != null || TextRenderingMode.Stroke != null)) {
-    strokeFactories = {
-      setTextRenderingMode, setStrokingColor, setLineWidth, TextRenderingMode,
-      strokeModeValue: TextRenderingMode.Outline != null
-        ? TextRenderingMode.Outline : TextRenderingMode.Stroke,
-      fillModeValue:   TextRenderingMode.Fill,
-    };
-  }
-} catch (e) { /* swallow */ }
-
-try {
-  // Raw construction: PDFOperator + PDFNumber are far more likely to
-  // be exported than the operator factories. We build the Tr / RG / w
-  // operators by hand with literal name strings.
-  let PDFOperator, PDFNumber;
-  try {
-    const p = require('pdf-lib');
-    PDFOperator = p.PDFOperator;
-    PDFNumber = p.PDFNumber;
-  } catch (e1) {
-    PDFOperator = require('pdf-lib/cjs/core/operators/PDFOperator').default
-                  || require('pdf-lib/cjs/core/operators/PDFOperator');
-    PDFNumber = require('pdf-lib/cjs/core/objects/PDFNumber').default
-                || require('pdf-lib/cjs/core/objects/PDFNumber');
-  }
-  if (PDFOperator && PDFNumber && typeof PDFOperator.of === 'function'
-      && typeof PDFNumber.of === 'function') {
-    const num = n => PDFNumber.of(n);
-    strokeManual = {
-      setStrokeWhite: () => PDFOperator.of('RG', [num(1), num(1), num(1)]),
-      setLineWidth:   w => PDFOperator.of('w', [num(w)]),
-      setTrStroke:    () => PDFOperator.of('Tr', [num(1)]),
-      setTrFill:      () => PDFOperator.of('Tr', [num(0)]),
-    };
-  }
-} catch (e) { /* swallow */ }
 const fontkit = require('@pdf-lib/fontkit');
 const fs = require('fs');
 const path = require('path');
 
 // ---- module-scope caches (warm-start friendly) ----------------------
-let cachedTemplate = null;
 let cachedFontBuf = null;
-const cachedSilhouettes = {};
+let cachedFkFont = null;
+let SILHOUETTE_PATHS = {};
+try { SILHOUETTE_PATHS = require('./silhouette-paths.json'); } catch (e) {}
 
 const ARCHIVO_BLACK_URL =
   'https://fonts.gstatic.com/s/archivoblack/v23/HTxqL289NzCGg4MzN6KJ7eW6OYs.ttf';
@@ -162,129 +55,98 @@ function publicBaseUrl() {
   return 'https://paint-lookup.vercel.app';
 }
 
-// ---- layout geometry ------------------------------------------------
-// New Canva master is exported as SVG → converted to PDF with a clean
-// (0, 0) origin MediaBox at 269.25 × 127.5 pts. The earlier empirical
-// offset (~44pt) is gone — yFromTop now equals pdftotext top-down y.
-const PAGE = { width: 269.25, height: 127.5 };
-const toY = yFromTop => PAGE.height - yFromTop;
+// ---- LAYOUT (Ari's spec: 95mm × 18mm at 72dpi = 269.29 × 51.02 pt) --
+// 1mm = 2.83464567 points
+const MM = 2.83464567;
+const PAGE = { width: 95 * MM, height: 18 * MM };  // 269.29 × 51.02 pt
 
-// Big black rectangle that covers the entire customer-info block,
-// hiding all three placeholder texts.
-//   yMin pushed down so the full-width horizontal divider line under the
-//        tagline stays visible (gives the clear strip of paint colour
-//        running along the pen).
-//   xMax pulled INSIDE the original Canva black area so the rect doesn't
-//        extend past the label edge and create a visible black step.
-//   yMax stops above the legal text and the GHS02 pictogram.
-// New page coords. Top brand strip occupies y 0-54, divider near y 55,
-// transparent middle y 56-110, bottom legal strip y 110-127.5.
-// Customer column is the right half of the middle area.
-// Customer block sits on the right half — abuts the silhouette panel
-// edge-to-edge with no visible gap (Rick decided the paint-coloured
-// gap between them was distracting).
-const CUSTOMER_BLOCK = { xMin: 133, yMin: 58, xMax: 253, yMax: 108 };
-
-// Silhouette area sits on the left half, abuts the customer block.
-const SILHOUETTE_BOX = { xMin: 18, yMin: 58, xMax: 133, yMax: 108 };
-
-// The actual silhouette image goes in the left half of the middle area.
-const SILHOUETTE_IMAGE_BOX = { xMin: 18, yMin: 58, xMax: 133, yMax: 108 };
-
-// Where each piece of customer text gets drawn. yFromTop is the BASELINE
-// of the text. yFromTop values are spread further apart so the three
-// rows have visible breathing room between them. Font sizes are the
-// MAXIMUM — drawCenteredTextInBlock auto-shrinks them if the text won't
-// fit horizontally (handles edge cases like "Supercalafragalistic Green").
-// style 'solid' = filled white text (used for the reg — always readable)
-// style 'outline' = stroke-only white border, letter interior left clear
-//   so when printed on clear vinyl, the customer's paint colour shows
-//   through the inside of each letter.
-// Tuned for the new SVG-derived PDF: 0,0 origin means yFromTop maps
-// directly to pdftotext y. Transparent middle band spans roughly y
-// 58-108 on the 127.5pt page. Font sizes scaled down to suit the
-// smaller page.
-const TEXT_LAYOUT = {
-  reg:       { yFromTop: 70,  fontSize: 14, style: 'solid'   },
-  paintName: { yFromTop: 88,  fontSize: 15, style: 'outline' },
-  paintCode: { yFromTop: 104, fontSize: 13, style: 'outline' },
+// Silhouette sits on the left, text zone on the right. Small margins
+// keep the design breathing away from the physical cut edges.
+const MARGIN = 2 * MM;                       // 2mm all round
+const SILHOUETTE_BOX = {
+  xMin: MARGIN,
+  xMax: MARGIN + 22 * MM,                    // 22mm wide silhouette
+  yMin: MARGIN,
+  yMax: PAGE.height - MARGIN,                // full inner height
+};
+const TEXT_ZONE = {
+  xMin: SILHOUETTE_BOX.xMax + 2 * MM,        // 2mm gap after silhouette
+  xMax: PAGE.width - MARGIN,
 };
 
-// ---- loaders --------------------------------------------------------
-async function loadTemplate() {
-  if (cachedTemplate) return cachedTemplate;
-  // PDF lives next to this function file (api/canva-template.pdf).
-  const file = path.join(__dirname, 'canva-template.pdf');
-  if (!fs.existsSync(file)) {
-    throw new Error(`Template not found at ${file}`);
-  }
-  cachedTemplate = fs.readFileSync(file);
-  return cachedTemplate;
-}
+// Text rows — baselines measured from BOTTOM (PostScript y-up).
+// Three rows evenly spaced in the 18mm height.
+//   reg (top)        y ≈ 13mm from bottom
+//   paint name (mid) y ≈  8mm from bottom
+//   paint code (bot) y ≈  3mm from bottom
+// Font sizes tuned for the 18mm strip — paint name auto-shrinks when
+// a customer's paint name is unusually long (e.g. two-tone codes).
+const TEXT_LAYOUT = {
+  reg:       { baselineY: 13 * MM, fontSize: 12 },
+  paintName: { baselineY:  7.5 * MM, fontSize: 10 },
+  paintCode: { baselineY:  2.5 * MM, fontSize:  9 },
+};
 
+// ---- font loading ---------------------------------------------------
 async function loadFont() {
-  if (cachedFontBuf) return cachedFontBuf;
+  if (cachedFontBuf && cachedFkFont) {
+    return { buf: cachedFontBuf, fkFont: cachedFkFont };
+  }
   const res = await fetch(ARCHIVO_BLACK_URL);
   if (!res.ok) throw new Error(`Font fetch failed: ${res.status}`);
   cachedFontBuf = Buffer.from(await res.arrayBuffer());
-  return cachedFontBuf;
+  cachedFkFont = fontkit.create(cachedFontBuf);
+  return { buf: cachedFontBuf, fkFont: cachedFkFont };
 }
 
-async function loadSilhouette(bodyType) {
-  const safe = String(bodyType || '').replace(/[^a-z0-9-]/gi, '');
-  if (cachedSilhouettes[safe]) return cachedSilhouettes[safe];
-
-  const url = `${publicBaseUrl()}/silhouettes/${safe}.png`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    if (safe !== 'suv-family') return loadSilhouette('suv-family');
-    throw new Error(`Silhouette fetch failed: ${res.status} for ${url}`);
+// ---- text width + auto-shrink --------------------------------------
+function widthOfTextAtSize(fkFont, text, fontSize) {
+  const upm = fkFont.unitsPerEm || 1000;
+  const scale = fontSize / upm;
+  const run = fkFont.layout(text);
+  let total = 0;
+  const positions = run.positions || [];
+  for (const pos of positions) {
+    total += pos.xAdvance || 0;
   }
-  cachedSilhouettes[safe] = Buffer.from(await res.arrayBuffer());
-  return cachedSilhouettes[safe];
+  return total * scale;
 }
 
-// ---- drawing helpers ------------------------------------------------
-function drawBlackOver(page, box, pad = 6) {
-  page.drawRectangle({
-    x: box.xMin - pad,
-    y: toY(box.yMax) - pad,
-    width: (box.xMax - box.xMin) + pad * 2,
-    height: (box.yMax - box.yMin) + pad * 2,
-    color: rgb(0, 0, 0),
-  });
-}
-
-// Compute final {fontSize, x, y, width} for a centred text item — same
-// auto-shrink logic as drawCenteredTextInBlock but exposed so we can
-// reuse it for the cut-out path construction.
-function computeTextLayout(font, text, layout, block) {
-  let fontSize = layout.fontSize;
-  const blockW = block.xMax - block.xMin;
-  const maxW = blockW - 4;
-  let w = font.widthOfTextAtSize(text, fontSize);
-  while (w > maxW && fontSize > 7) {
-    fontSize -= 1;
-    w = font.widthOfTextAtSize(text, fontSize);
+// Given the max-fontSize + text + max-width, step the font size down
+// by 1pt until the text fits. Floor at 6pt so absurd names stay
+// legible but don't blow out the layout.
+function fitFontSize(fkFont, text, maxFontSize, maxWidth) {
+  let size = maxFontSize;
+  while (size > 6 && widthOfTextAtSize(fkFont, text, size) > maxWidth) {
+    size -= 0.5;
   }
-  const x = (block.xMin + block.xMax) / 2 - w / 2;
-  const y = toY(layout.yFromTop);
-  return { fontSize, x, y, width: w };
+  return size;
 }
 
-// Push fontkit glyph-path commands as PDF path operators (m / l / c / h),
-// scaled by fontSize and translated to the baseline position.
-function emitGlyphPathOps(ops, fkFont, text, fontSize, baselineX, baselineY) {
-  if (!fkFont || !RawPDFOperator || !RawPDFNumber) return;
-  const num = n => RawPDFNumber.of(n);
-  const op = RawPDFOperator;
+// ---- PostScript emitters -------------------------------------------
+// PostScript uses long-form operators: moveto, lineto, curveto,
+// closepath. Coordinates come BEFORE the operator (like RPN).
+//
+// PostScript coordinate system:
+//   Origin bottom-left, y-up (SAME as PDF).
+//
+// Numbers formatted to 3 decimal places to keep the EPS file small
+// while staying well inside 1200dpi print resolution.
+
+function n(v) { return v.toFixed(3); }
+
+// Emit PS operators for a font glyph run at (baselineX, baselineY),
+// scaled to fontSize. Returns a string of PS lines.
+function emitGlyphPathPS(fkFont, text, fontSize, baselineX, baselineY) {
+  if (!fkFont) return '';
   const upm = fkFont.unitsPerEm || 1000;
   const scale = fontSize / upm;
   const run = fkFont.layout(text);
   const positions = run.positions || [];
   const glyphs = run.glyphs || [];
-
+  const lines = [];
   let advX = 0;
+
   for (let i = 0; i < glyphs.length; i++) {
     const glyph = glyphs[i];
     const pos = positions[i] || {};
@@ -294,399 +156,190 @@ function emitGlyphPathOps(ops, fkFont, text, fontSize, baselineX, baselineY) {
     let curY = gy0;
     const path = glyph && glyph.path;
     const cmds = (path && path.commands) || [];
+
     for (const cmd of cmds) {
       const name = cmd.command;
       const a = cmd.args || [];
       if (name === 'moveTo') {
         const X = gx0 + a[0] * scale;
         const Y = gy0 + a[1] * scale;
-        ops.push(op.of('m', [num(X), num(Y)]));
+        lines.push(`${n(X)} ${n(Y)} moveto`);
         curX = X; curY = Y;
       } else if (name === 'lineTo') {
         const X = gx0 + a[0] * scale;
         const Y = gy0 + a[1] * scale;
-        ops.push(op.of('l', [num(X), num(Y)]));
+        lines.push(`${n(X)} ${n(Y)} lineto`);
         curX = X; curY = Y;
       } else if (name === 'bezierCurveTo') {
         const X1 = gx0 + a[0] * scale, Y1 = gy0 + a[1] * scale;
         const X2 = gx0 + a[2] * scale, Y2 = gy0 + a[3] * scale;
         const X3 = gx0 + a[4] * scale, Y3 = gy0 + a[5] * scale;
-        ops.push(op.of('c', [num(X1), num(Y1), num(X2), num(Y2), num(X3), num(Y3)]));
+        lines.push(`${n(X1)} ${n(Y1)} ${n(X2)} ${n(Y2)} ${n(X3)} ${n(Y3)} curveto`);
         curX = X3; curY = Y3;
       } else if (name === 'quadraticCurveTo') {
-        // Convert Q (P0, Pc, P2) → C with two cubic control points
+        // Convert Q (Pc, P2) → C with two cubic control points.
         const QX = gx0 + a[0] * scale, QY = gy0 + a[1] * scale;
         const X3 = gx0 + a[2] * scale, Y3 = gy0 + a[3] * scale;
         const X1 = curX + (2 / 3) * (QX - curX);
         const Y1 = curY + (2 / 3) * (QY - curY);
         const X2 = X3 + (2 / 3) * (QX - X3);
         const Y2 = Y3 + (2 / 3) * (QY - Y3);
-        ops.push(op.of('c', [num(X1), num(Y1), num(X2), num(Y2), num(X3), num(Y3)]));
+        lines.push(`${n(X1)} ${n(Y1)} ${n(X2)} ${n(Y2)} ${n(X3)} ${n(Y3)} curveto`);
         curX = X3; curY = Y3;
       } else if (name === 'closePath') {
-        ops.push(op.of('h'));
+        lines.push('closepath');
       }
     }
     const advance = (pos.xAdvance != null ? pos.xAdvance : (glyph.advanceWidth || 0));
     advX += advance * scale;
   }
+  return lines.join('\n');
 }
 
-// Push the silhouette body path's PDF operators (M/L/C/H) into `ops`,
-// scaled and translated so the path fits inside `imageBox` with aspect
-// ratio preserved (same fit math as the silhouette PNG draw).
-function emitSilhouetteBodyOps(ops, bodyType, imageBox) {
-  if (!RawPDFOperator || !RawPDFNumber) return;
+// Emit PS operators for the silhouette body outline, scaled to fit
+// inside `box` with aspect ratio preserved.
+//
+// Silhouette paths were extracted from SVG (y-down). PostScript is
+// y-up. We flip y explicitly during the coordinate transform.
+function emitSilhouettePathPS(bodyType, box) {
   const sil = SILHOUETTE_PATHS[bodyType] || SILHOUETTE_PATHS['suv-family'];
-  if (!sil || !sil.bounds || !sil.commands) return;
-  const num = n => RawPDFNumber.of(n);
-  const op = RawPDFOperator;
+  if (!sil || !sil.bounds || !sil.commands) return '';
 
   const [bxMin, byMin, bxMax, byMax] = sil.bounds;
   const pathW = bxMax - bxMin;
   const pathH = byMax - byMin;
-  const boxW = imageBox.xMax - imageBox.xMin;
-  const boxH = imageBox.yMax - imageBox.yMin;
+  const boxW = box.xMax - box.xMin;
+  const boxH = box.yMax - box.yMin;
   const pathAspect = pathW / pathH;
   const boxAspect = boxW / boxH;
   let drawW, drawH;
-  if (pathAspect > boxAspect) { drawW = boxW; drawH = boxW / pathAspect; }
-  else                       { drawH = boxH; drawW = boxH * pathAspect; }
+  if (pathAspect > boxAspect) {
+    drawW = boxW;
+    drawH = boxW / pathAspect;
+  } else {
+    drawH = boxH;
+    drawW = boxH * pathAspect;
+  }
   const sx = drawW / pathW;
   const sy = drawH / pathH;
-  const offX = imageBox.xMin + (boxW - drawW) / 2;
-  // pdf-lib y origin is bottom — bottom of box, then flip Y inside.
-  const boxBottomPdfY = toY(imageBox.yMax);
-  const offY = boxBottomPdfY + (boxH - drawH) / 2;
+  const offX = box.xMin + (boxW - drawW) / 2;
+  const offY = box.yMin + (boxH - drawH) / 2;
 
-  // Transform a viewBox-space point (px, py) to PDF coords. SVG y goes
-  // down; PDF y goes up — flip Y by subtracting from drawH and adding
-  // the bottom-left offset.
+  // Transform SVG (y-down) point → PostScript (y-up) point.
   const tx = px => offX + (px - bxMin) * sx;
   const ty = py => offY + drawH - (py - byMin) * sy;
 
+  const lines = [];
   for (const cmd of sil.commands) {
     const c = cmd[0];
     if (c === 'M') {
-      ops.push(op.of('m', [num(tx(cmd[1])), num(ty(cmd[2]))]));
+      lines.push(`${n(tx(cmd[1]))} ${n(ty(cmd[2]))} moveto`);
     } else if (c === 'L') {
-      ops.push(op.of('l', [num(tx(cmd[1])), num(ty(cmd[2]))]));
+      lines.push(`${n(tx(cmd[1]))} ${n(ty(cmd[2]))} lineto`);
     } else if (c === 'C') {
-      ops.push(op.of('c', [
-        num(tx(cmd[1])), num(ty(cmd[2])),
-        num(tx(cmd[3])), num(ty(cmd[4])),
-        num(tx(cmd[5])), num(ty(cmd[6])),
-      ]));
+      lines.push(
+        `${n(tx(cmd[1]))} ${n(ty(cmd[2]))} ` +
+        `${n(tx(cmd[3]))} ${n(ty(cmd[4]))} ` +
+        `${n(tx(cmd[5]))} ${n(ty(cmd[6]))} curveto`
+      );
     } else if (c === 'H') {
-      ops.push(op.of('h'));
+      lines.push('closepath');
     }
   }
+  return lines.join('\n');
 }
 
-// Draw a black rectangle over `block` with letter shapes AND silhouette
-// body shape cut out of it. Uses PDF even-odd clipping: build a compound
-// path of (outer rect + letter shapes + silhouette body), set it as the
-// clip with W* n, then fill black. Returns true if the cut-out was
-// successfully pushed.
-function drawBlackBlockWithCutouts(page, block, letterItems, fkFont, bodyType, silhouetteImageBox) {
-  if (!RawPDFOperator || !RawPDFNumber) return false;
-  try {
-    const num = n => RawPDFNumber.of(n);
-    const op = RawPDFOperator;
-    const ops = [];
-
-    // Save graphics state so clip path doesn't leak.
-    ops.push(op.of('q'));
-
-    // Outer rectangle path — the FULL middle area we're blacking out.
-    const x = block.xMin;
-    const yMin = toY(block.yMax);
-    const w = block.xMax - block.xMin;
-    const h = block.yMax - block.yMin;
-    ops.push(op.of('re', [num(x), num(yMin), num(w), num(h)]));
-
-    // Letter paths
-    if (fkFont) {
-      for (const item of letterItems) {
-        emitGlyphPathOps(ops, fkFont, item.text, item.fontSize, item.x, item.y);
-      }
-    }
-
-    // Silhouette body path
-    if (bodyType && silhouetteImageBox) {
-      emitSilhouetteBodyOps(ops, bodyType, silhouetteImageBox);
-    }
-
-    // Set even-odd clipping path (no fill yet)
-    ops.push(op.of('W*'));
-    ops.push(op.of('n'));
-
-    // Fill black within the clipped region — the area inside the outer
-    // rect but OUTSIDE all the cut-out shapes (the even-odd region).
-    ops.push(op.of('rg', [num(0), num(0), num(0)]));
-    ops.push(op.of('re', [num(x), num(yMin), num(w), num(h)]));
-    ops.push(op.of('f'));
-
-    // Restore graphics state.
-    ops.push(op.of('Q'));
-
-    page.pushOperators(...ops);
-    return true;
-  } catch (e) {
-    return false;
-  }
+// Centre a text string within TEXT_ZONE, auto-shrinking if it's too
+// wide. Returns { x, fontSize } — y is fixed by the layout row.
+function layoutCenteredText(fkFont, text, layout) {
+  const zoneW = TEXT_ZONE.xMax - TEXT_ZONE.xMin;
+  const maxW = zoneW - 2;   // 1pt breathing room each side
+  const fontSize = fitFontSize(fkFont, text, layout.fontSize, maxW);
+  const textW = widthOfTextAtSize(fkFont, text, fontSize);
+  const x = TEXT_ZONE.xMin + (zoneW - textW) / 2;
+  return { x, fontSize };
 }
 
-// Backwards-compatible name so older callers still work
-const drawBlackBlockWithLetterCutouts = drawBlackBlockWithCutouts;
+// ---- EPS generation -------------------------------------------------
+function buildEps({ reg, paintName, paintCode, bodyType, fkFont }) {
+  const regStr = String(reg || '').toUpperCase().trim();
+  const nameStr = String(paintName || '').toUpperCase().trim();
+  const codeStr = String(paintCode || '').toUpperCase().trim();
 
-function drawCenteredTextInBlock(page, font, text, layout, block) {
-  const { yFromTop } = layout;
-  // Auto-shrink: start at the configured fontSize and step down by 1pt
-  // until the text fits within the block's horizontal bounds. Floor at
-  // 7pt so it stays legible even for absurdly long names.
-  let fontSize = layout.fontSize;
-  const blockW = block.xMax - block.xMin;
-  // Leave 4pt of horizontal padding inside the block so text isn't
-  // jammed against the edge.
-  const maxW = blockW - 4;
-  let w = font.widthOfTextAtSize(text, fontSize);
-  while (w > maxW && fontSize > 7) {
-    fontSize -= 1;
-    w = font.widthOfTextAtSize(text, fontSize);
-  }
-  const x = (block.xMin + block.xMax) / 2 - w / 2;
-  // Position baseline at the given yFromTop coordinate. Characters
-  // extend upward from the baseline.
-  const y = toY(yFromTop);
+  const regFit  = layoutCenteredText(fkFont, regStr,  TEXT_LAYOUT.reg);
+  const nameFit = layoutCenteredText(fkFont, nameStr, TEXT_LAYOUT.paintName);
+  const codeFit = layoutCenteredText(fkFont, codeStr, TEXT_LAYOUT.paintCode);
 
-  if (layout.style === 'outline') {
-    // Try true PDF stroke-only rendering. Tr=1 (Stroke) is part of the
-    // graphics state, so setting it before drawText persists into the
-    // BT/ET text object pdf-lib generates. Letter interior stays
-    // genuinely transparent (no ink) → paint shows through on vinyl.
-    let drawnAsStroke = false;
+  const silhouettePS = emitSilhouettePathPS(bodyType, SILHOUETTE_BOX);
+  const regPS  = emitGlyphPathPS(fkFont, regStr,  regFit.fontSize,
+                                 regFit.x,  TEXT_LAYOUT.reg.baselineY);
+  const namePS = emitGlyphPathPS(fkFont, nameStr, nameFit.fontSize,
+                                 nameFit.x, TEXT_LAYOUT.paintName.baselineY);
+  const codePS = emitGlyphPathPS(fkFont, codeStr, codeFit.fontSize,
+                                 codeFit.x, TEXT_LAYOUT.paintCode.baselineY);
 
-    // Path 1: high-level factories.
-    if (!drawnAsStroke && strokeFactories) {
-      try {
-        const a = strokeFactories.setStrokingColor(rgb(1, 1, 1));
-        const b = strokeFactories.setLineWidth(2.0);
-        const c = strokeFactories.setTextRenderingMode(
-          strokeFactories.strokeModeValue);
-        const d = strokeFactories.setTextRenderingMode(
-          strokeFactories.fillModeValue);
-        if (a && b && c && d) {
-          page.pushOperators(a, b, c);
-          page.drawText(text, {
-            x, y, size: fontSize, font, color: rgb(1, 1, 1),
-          });
-          page.pushOperators(d);
-          drawnAsStroke = true;
-        }
-      } catch (e) { /* fall through */ }
-    }
+  // BoundingBox integers must round OUTWARD (spec: fully contain the
+  // artwork). HiResBoundingBox is the true float value.
+  const bbLo = 0;
+  const bbHiX = Math.ceil(PAGE.width);
+  const bbHiY = Math.ceil(PAGE.height);
 
-    // Path 2: hand-built PDFOperator with literal operator names.
-    if (!drawnAsStroke && strokeManual) {
-      try {
-        const a = strokeManual.setStrokeWhite();
-        const b = strokeManual.setLineWidth(2.0);
-        const c = strokeManual.setTrStroke();
-        const d = strokeManual.setTrFill();
-        if (a && b && c && d) {
-          page.pushOperators(a, b, c);
-          page.drawText(text, {
-            x, y, size: fontSize, font, color: rgb(1, 1, 1),
-          });
-          page.pushOperators(d);
-          drawnAsStroke = true;
-        }
-      } catch (e) { /* fall through to halo */ }
-    }
+  const now = new Date().toISOString();
 
-    if (!drawnAsStroke) {
-      // Halo fallback: 8 white draws around a centre white draw.
-      // Letters appear solid white (no transparent interior), but at
-      // least nothing prints as black ink in the middle.
-      const stroke = 0.6;
-      const offsets = [
-        [ stroke,  0       ], [-stroke,  0       ],
-        [ 0,       stroke  ], [ 0,      -stroke  ],
-        [ stroke * 0.7,  stroke * 0.7 ],
-        [-stroke * 0.7,  stroke * 0.7 ],
-        [ stroke * 0.7, -stroke * 0.7 ],
-        [-stroke * 0.7, -stroke * 0.7 ],
-      ];
-      for (const [dx, dy] of offsets) {
-        page.drawText(text, {
-          x: x + dx, y: y + dy, size: fontSize, font, color: rgb(1, 1, 1),
-        });
-      }
-      page.drawText(text, {
-        x, y, size: fontSize, font, color: rgb(1, 1, 1),
-      });
-    }
-  } else {
-    page.drawText(text, {
-      x, y, size: fontSize, font, color: rgb(1, 1, 1),
-    });
-  }
-}
-
-// ---- core generator -------------------------------------------------
-async function generateLabelPdf({ reg, paintName, paintCode, bodyType }) {
-  const templateBuf = await loadTemplate();
-  const fontBuf = await loadFont();
-  const silhouetteBuf = await loadSilhouette(bodyType);
-
-  const pdfDoc = await PDFDocument.load(templateBuf);
-  pdfDoc.registerFontkit(fontkit);
-  const font = await pdfDoc.embedFont(fontBuf);
-  const silhouette = await pdfDoc.embedPng(silhouetteBuf);
-  const page = pdfDoc.getPage(0);
-
-  // 0) PAINT-COLOUR EDGE COVERAGE. The Canva master template leaves four
-  //    transparent zones around the silhouette+customer middle band:
-  //      - thin strip BELOW the top brand band  (y ≈ 51-58pt)
-  //      - thin strip ABOVE the bottom legal band (y ≈ 108-113pt)
-  //      - left margin (x ≈ 0-18pt)
-  //      - right margin (x ≈ 253-269.25pt)
-  //    On a clear-vinyl pen filled with paint, all four zones would show
-  //    paint colour, which Rick didn't want — he wants the label to read
-  //    as solid black with paint colour ONLY through the silhouette PNG's
-  //    transparent accents and the customer block's letter cut-outs.
-  //    Cover those four transparent zones with explicit black rectangles
-  //    BEFORE drawing anything else on top (the silhouette + customer
-  //    block come next, drawn on top of these covers).
-  // NOTE: deliberately NO top-edge black cover at y 49-58 — the thin
-  // transparent strip at y ≈ 51-54 sits just below the "YOUR CAR. YOUR
-  // COLOUR." brand strip and Rick wants it to keep showing paint colour
-  // (a subtle paint-coloured reveal that links the brand strip to the
-  // silhouette panel below).
-  const EDGE_BLACK_BOTTOM = { xMin: 0,   yMin: 108, xMax: 269.25, yMax: 113 };
-  const EDGE_BLACK_LEFT   = { xMin: 0,   yMin: 55,  xMax: 18,     yMax: 113 };
-  const EDGE_BLACK_RIGHT  = { xMin: 253, yMin: 55,  xMax: 269.25, yMax: 113 };
-  for (const z of [EDGE_BLACK_BOTTOM, EDGE_BLACK_LEFT, EDGE_BLACK_RIGHT]) {
-    page.drawRectangle({
-      x: z.xMin,
-      y: toY(z.yMax),
-      width: z.xMax - z.xMin,
-      height: z.yMax - z.yMin,
-      color: rgb(0, 0, 0),
-    });
-  }
-
-  // 1) Black CUSTOMER block (right half only) with cut-outs for:
-  //       - paint name letter shapes (via fontkit glyph paths)
-  //       - paint code letter shapes
-  //     Compound path + even-odd clip → black fill skips inside the
-  //     letter shapes → letter interiors stay genuinely transparent →
-  //     paint colour shows through on clear vinyl.
-  //
-  //     NOTE: Unlike earlier versions we DO NOT fill the silhouette
-  //     image area on the LEFT with black, nor cut a vector silhouette
-  //     body out of it. Rick's hand-drawn silhouette PNGs are now
-  //     white-body-on-black with their own transparent paint-accent
-  //     regions baked in — they supply their own background. We just
-  //     stamp the PNG into a transparent zone of the master.
-  let fkFont = null;
-  try { fkFont = fontkit.create(fontBuf); } catch (e) {}
-  const paintNameLayout = computeTextLayout(
-    font, paintName, TEXT_LAYOUT.paintName, CUSTOMER_BLOCK);
-  const paintCodeLayout = computeTextLayout(
-    font, paintCode, TEXT_LAYOUT.paintCode, CUSTOMER_BLOCK);
-  drawBlackBlockWithCutouts(page, CUSTOMER_BLOCK, [
-    { text: paintName, fontSize: paintNameLayout.fontSize,
-      x: paintNameLayout.x, y: paintNameLayout.y },
-    { text: paintCode, fontSize: paintCodeLayout.fontSize,
-      x: paintCodeLayout.x, y: paintCodeLayout.y },
-  ], fkFont, null, null);  // no vector silhouette-body cut-out
-
-  // 2) Stamp the silhouette PNG into the transparent silhouette area.
-  //    PNG itself supplies the black background, the white car body,
-  //    and the small transparent areas (windows, open tops, wheel hubs)
-  //    where paint colour shows through.
-  //
-  //    After aspect-fitting the PNG into the box, there'll usually be
-  //    empty padding bars top+bottom (if PNG is wider than box) or
-  //    left+right (if PNG is taller than box). We fill those bars with
-  //    BLACK *before* drawing the PNG so the gaps look like a single
-  //    continuous black panel — matching what the customer block does.
-  const boxW = SILHOUETTE_IMAGE_BOX.xMax - SILHOUETTE_IMAGE_BOX.xMin;
-  const boxH = SILHOUETTE_IMAGE_BOX.yMax - SILHOUETTE_IMAGE_BOX.yMin;
-  const silAspect = silhouette.width / silhouette.height;
-  const boxAspect = boxW / boxH;
-  let drawW, drawH;
-  if (silAspect > boxAspect) {
-    drawW = boxW;
-    drawH = boxW / silAspect;
-  } else {
-    drawH = boxH;
-    drawW = boxH * silAspect;
-  }
-  const padX = (boxW - drawW) / 2;
-  const padY = (boxH - drawH) / 2;
-  const drawX = SILHOUETTE_IMAGE_BOX.xMin + padX;
-  const drawY = toY(SILHOUETTE_IMAGE_BOX.yMax) + padY;
-
-  // Fill horizontal bars (above and below the PNG).
-  if (padY > 0.01) {
-    page.drawRectangle({
-      x: SILHOUETTE_IMAGE_BOX.xMin,
-      y: toY(SILHOUETTE_IMAGE_BOX.yMax),
-      width: boxW,
-      height: padY,
-      color: rgb(0, 0, 0),
-    });
-    page.drawRectangle({
-      x: SILHOUETTE_IMAGE_BOX.xMin,
-      y: toY(SILHOUETTE_IMAGE_BOX.yMax) + padY + drawH,
-      width: boxW,
-      height: padY,
-      color: rgb(0, 0, 0),
-    });
-  }
-  // Fill vertical bars (left and right of the PNG).
-  if (padX > 0.01) {
-    page.drawRectangle({
-      x: SILHOUETTE_IMAGE_BOX.xMin,
-      y: toY(SILHOUETTE_IMAGE_BOX.yMax),
-      width: padX,
-      height: boxH,
-      color: rgb(0, 0, 0),
-    });
-    page.drawRectangle({
-      x: SILHOUETTE_IMAGE_BOX.xMin + padX + drawW,
-      y: toY(SILHOUETTE_IMAGE_BOX.yMax),
-      width: padX,
-      height: boxH,
-      color: rgb(0, 0, 0),
-    });
-  }
-
-  page.drawImage(silhouette, {
-    x: drawX,
-    y: drawY,
-    width: drawW,
-    height: drawH,
-  });
-
-  // 3) Stamp the three lines of customer text on TOP. reg is solid
-  //    white toner; paint name and paint code are stroke-only so their
-  //    letter interiors stay clear for paint to show through.
-  drawCenteredTextInBlock(page, font, String(reg).toUpperCase(),
-    TEXT_LAYOUT.reg, CUSTOMER_BLOCK);
-  drawCenteredTextInBlock(page, font, paintName,
-    TEXT_LAYOUT.paintName, CUSTOMER_BLOCK);
-  drawCenteredTextInBlock(page, font, paintCode,
-    TEXT_LAYOUT.paintCode, CUSTOMER_BLOCK);
-
-  return Buffer.from(await pdfDoc.save());
+  const lines = [
+    '%!PS-Adobe-3.0 EPSF-3.0',
+    `%%BoundingBox: ${bbLo} ${bbLo} ${bbHiX} ${bbHiY}`,
+    `%%HiResBoundingBox: 0 0 ${n(PAGE.width)} ${n(PAGE.height)}`,
+    '%%Title: PaintMatchPen clear overlay',
+    `%%Creator: paint-lookup /api/generate-label (${now})`,
+    '%%DocumentProcessColors: Black',
+    '%%LanguageLevel: 2',
+    '%%EndComments',
+    '',
+    '%%BeginProlog',
+    '/DeviceCMYK setcolorspace',
+    '0 0 0 1 setcmykcolor',
+    '%%EndProlog',
+    '',
+    '%%Page: 1 1',
+    'gsave',
+    '',
+    '% Build a compound path: outer rectangle + all knockout subpaths.',
+    '% Fill with even-odd rule so black covers the rectangle EXCEPT the',
+    '% areas inside the knockout shapes (silhouette + all letters).',
+    'newpath',
+    '',
+    '% Outer rectangle',
+    `0 0 moveto`,
+    `${n(PAGE.width)} 0 lineto`,
+    `${n(PAGE.width)} ${n(PAGE.height)} lineto`,
+    `0 ${n(PAGE.height)} lineto`,
+    'closepath',
+    '',
+    '% Silhouette body knockout',
+    silhouettePS,
+    '',
+    '% Registration knockout',
+    regPS,
+    '',
+    '% Paint name knockout',
+    namePS,
+    '',
+    '% Paint code knockout',
+    codePS,
+    '',
+    '% Fill with even-odd rule — inside compound path minus the subpaths',
+    'eofill',
+    '',
+    'grestore',
+    '%%EOF',
+    '',
+  ];
+  return Buffer.from(lines.join('\n'), 'utf8');
 }
 
 // ---- Dropbox upload -------------------------------------------------
-async function uploadToDropbox(pdfBuf, dropboxPath) {
+async function uploadToDropbox(buf, dropboxPath) {
   const token = process.env.DROPBOX_TOKEN;
   if (!token) throw new Error('DROPBOX_TOKEN not configured');
 
@@ -702,7 +355,7 @@ async function uploadToDropbox(pdfBuf, dropboxPath) {
         mute: true,
       }),
     },
-    body: pdfBuf,
+    body: buf,
   });
 
   if (!res.ok) {
@@ -712,16 +365,13 @@ async function uploadToDropbox(pdfBuf, dropboxPath) {
   return res.json();
 }
 
-// ---- payload normalisation -----------------------------------------
+// ---- payload normalisation ------------------------------------------
 // We accept two payload shapes:
-//   A) Simple (ReqBin / curl / direct callers):
+//   A) Simple direct callers (curl / ReqBin):
 //        { reg, paintName, paintCode, bodyType?, orderId? }
-//   B) Wix order webhook (set "Body params: Entire payload" in the
-//      Wix automation HTTP action). Wix sends the whole order object;
-//      our PaintMatch product stores per-line metadata as Wix
-//      "description lines" — five name+value pairs on the line item:
-//        Registration / Vehicle / Paint name / Paint code / Colour.
-//      We pull those out by name match (case-insensitive, fuzzy).
+//   B) Wix order webhook: full order payload with description lines.
+//      We pull Registration / Paint name / Paint code out by fuzzy
+//      name-match on the line item's description lines.
 
 function readDescLineName(dl) {
   if (!dl || dl.name == null) return '';
@@ -730,10 +380,7 @@ function readDescLineName(dl) {
 }
 function readDescLineValue(dl) {
   if (!dl) return '';
-  // Wix's flat shape (the one actually used by their Order webhook):
-  //   { name: "Registration", description: "BU23CRK" }
   if (typeof dl.description === 'string') return dl.description;
-  // Other shapes Wix has used / their docs reference:
   if (typeof dl.plainText === 'string') return dl.plainText;
   if (dl.plainText) return dl.plainText.original || dl.plainText.translated || '';
   if (dl.colorInfo) return dl.colorInfo.original || dl.colorInfo.translated || '';
@@ -755,9 +402,6 @@ function findInDescriptionLines(descLines, ...needles) {
 }
 
 function extractFromWixPayload(body) {
-  // Wix nests the order in different places depending on the trigger
-  // version: top-level, body.order, body.data, body.entity, etc.
-  // Try the most common shapes in order.
   const candidates = [
     body,
     body.order,
@@ -775,10 +419,10 @@ function extractFromWixPayload(body) {
   const lineItems = order.lineItems || order.line_items || [];
   if (!Array.isArray(lineItems) || lineItems.length === 0) return null;
 
-  const line = lineItems[0];   // PaintMatchPen orders are always 1 pen per line
+  const line = lineItems[0];
   const descLines = line.descriptionLines || line.description_lines || [];
 
-  const result = {
+  return {
     reg:       findInDescriptionLines(descLines, 'Registration', 'Reg'),
     paintName: findInDescriptionLines(descLines, 'Paint name', 'PaintName'),
     paintCode: findInDescriptionLines(descLines, 'Paint code', 'PaintCode'),
@@ -786,19 +430,14 @@ function extractFromWixPayload(body) {
     vehicle:   findInDescriptionLines(descLines, 'Vehicle'),
     orderId:   order.number || order.orderNumber || order.id || order._id || body.orderId || null,
   };
-  return result;
 }
 
-// Translates the short categorical silhouetteKey that /api/lookup
-// returns (one of: suv, hatchback, saloon, estate, coupe, convertible,
-// mpv, pickup, van, sportscar) into a specific silhouette filename
-// that actually exists in public/silhouettes/. Without this mapping
-// "hatchback" / "suv" / "coupe" all 404 and fall back to suv-family,
-// which is why every label was coming out with the same shape.
+// Translate short categorical silhouetteKey → specific filename.
+// Same mapping as the PDF pipeline used — kept as-is because the
+// silhouette-paths.json keys still line up.
 function mapShortKeyToSilhouetteFile(key) {
   if (!key) return null;
   const k = String(key).toLowerCase().trim();
-  // Exact match — the silhouette file already exists under this name.
   const EXACT = new Set([
     'citycar', 'convertible', 'estate', 'mpv', 'pickup', 'saloon', 'van',
     'coupe-fastback','coupe-hatch','coupe-long','coupe-sleek','coupe-sloped','coupe-sport',
@@ -811,7 +450,6 @@ function mapShortKeyToSilhouetteFile(key) {
     'van-delivery',
   ]);
   if (EXACT.has(k)) return k;
-  // Short category from /api/lookup → most representative specific file.
   const SHORT_TO_FILE = {
     suv:         'suv-family',
     hatchback:   'hatchback-small',
@@ -820,16 +458,11 @@ function mapShortKeyToSilhouetteFile(key) {
     crossover:   'crossover-medium',
   };
   if (SHORT_TO_FILE[k]) return SHORT_TO_FILE[k];
-  return k; // pass through anything we don't recognise; loadSilhouette has its own fallback
+  return k;
 }
 
-// Best-effort body-type lookup. Calls the existing /api/lookup endpoint
-// on the same deployment with the registration, and tries to pull a
-// silhouette/body-type field out of whatever it returns. If anything
-// fails, returns null — the caller falls back to a default.
 async function lookupBodyTypeByReg(reg) {
   try {
-    // /api/lookup is POST-only and expects { vrm: "AB12CDE" } in the body.
     const url = `${publicBaseUrl()}/api/lookup`;
     const res = await fetch(url, {
       method: 'POST',
@@ -838,11 +471,6 @@ async function lookupBodyTypeByReg(reg) {
     });
     if (!res.ok) return null;
     const data = await res.json();
-    // /api/lookup returns the silhouette filename under "silhouetteKey"
-    // (see lookup.js → pickSilhouetteKey). That's the one we actually
-    // want to plug into generateLabelPdf({bodyType: ...}) because the
-    // silhouette PNGs are named exactly like the silhouetteKey values
-    // (estate.png, hatchback-small.png, suv-family.png, etc.).
     return data.silhouetteKey
         || data.bodyType
         || data.body_type
@@ -853,6 +481,12 @@ async function lookupBodyTypeByReg(reg) {
   } catch (e) {
     return null;
   }
+}
+
+// ---- core generator (exported for local testing) -------------------
+async function generateLabelEps({ reg, paintName, paintCode, bodyType }) {
+  const { fkFont } = await loadFont();
+  return buildEps({ reg, paintName, paintCode, bodyType, fkFont });
 }
 
 // ---- HTTP handler ---------------------------------------------------
@@ -870,17 +504,12 @@ module.exports = async function handler(req, res) {
       ? JSON.parse(req.body)
       : (req.body || {});
 
-    // Log the inbound payload (top-level keys + a structural snapshot) so
-    // we can see what Wix actually sends. Truncate to 4KB so we don't
-    // explode the log on huge orders.
     try {
       const peek = JSON.stringify(body).slice(0, 4000);
       console.log('[generate-label] inbound body keys =', Object.keys(body || {}));
       console.log('[generate-label] inbound body (first 4KB) =', peek);
     } catch (e) { /* swallow */ }
 
-    // Decide which payload shape this is. If the simple top-level fields
-    // are present, prefer them. Otherwise try Wix-order extraction.
     let inputs = null;
     if (body.reg && body.paintName && body.paintCode) {
       inputs = {
@@ -909,7 +538,7 @@ module.exports = async function handler(req, res) {
     //   1. caller provided it explicitly
     //   2. found in Wix description lines (rare)
     //   3. lookup via /api/lookup using the reg
-    //   4. fallback default — the pipeline never crashes on a missing body
+    //   4. fallback default
     if (!inputs.bodyType && inputs.reg) {
       inputs.bodyType = await lookupBodyTypeByReg(inputs.reg);
     }
@@ -920,14 +549,14 @@ module.exports = async function handler(req, res) {
     console.log('[generate-label] resolved bodyType =', inputs.bodyType);
 
     const { reg, paintName, paintCode, bodyType, orderId } = inputs;
-    const pdfBuf = await generateLabelPdf({ reg, paintName, paintCode, bodyType });
+    const epsBuf = await generateLabelEps({ reg, paintName, paintCode, bodyType });
 
     const today = new Date().toISOString().slice(0, 10);
     const safeReg = String(reg).replace(/\s+/g, '').toUpperCase();
     const suffix = orderId ? `-${String(orderId).replace(/[^a-z0-9-]/gi, '')}` : '';
-    const dropboxPath = `/PaintMatchPen/Orders/${today}/${safeReg}${suffix}.pdf`;
+    const dropboxPath = `/PaintMatchPen/Orders/${today}/REG-${safeReg}${suffix}.eps`;
 
-    await uploadToDropbox(pdfBuf, dropboxPath);
+    await uploadToDropbox(epsBuf, dropboxPath);
 
     return res.status(200).json({
       ok: true,
@@ -940,4 +569,4 @@ module.exports = async function handler(req, res) {
   }
 };
 
-module.exports.generateLabelPdf = generateLabelPdf;
+module.exports.generateLabelEps = generateLabelEps;
