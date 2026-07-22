@@ -77,16 +77,15 @@ const TEXT_ZONE = {
 };
 
 // Text rows — baselines measured from BOTTOM (PostScript y-up).
-// Three rows evenly spaced in the 18mm height.
-//   reg (top)        y ≈ 13mm from bottom
-//   paint name (mid) y ≈  8mm from bottom
-//   paint code (bot) y ≈  3mm from bottom
-// Font sizes tuned for the 18mm strip — paint name auto-shrinks when
-// a customer's paint name is unusually long (e.g. two-tone codes).
+// Three rows evenly spaced in the 18mm height, sized to fill the strip
+// with proper hero presence. Reg is biggest — most memorable and the
+// customer-recognition anchor. Paint name and code sized in descending
+// hierarchy underneath. Paint name auto-shrinks when a customer's paint
+// name is unusually long (e.g. two-tone codes).
 const TEXT_LAYOUT = {
-  reg:       { baselineY: 13 * MM, fontSize: 12 },
-  paintName: { baselineY:  7.5 * MM, fontSize: 10 },
-  paintCode: { baselineY:  2.5 * MM, fontSize:  9 },
+  reg:       { baselineY: 13 * MM, fontSize: 16 },
+  paintName: { baselineY:  7 * MM, fontSize: 14 },
+  paintCode: { baselineY:  2 * MM, fontSize: 12 },
 };
 
 // ---- font loading ---------------------------------------------------
