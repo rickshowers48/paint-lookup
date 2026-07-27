@@ -46,6 +46,26 @@ let cachedFkFont = null;
 let SILHOUETTE_PATHS = {};
 try { SILHOUETTE_PATHS = require('./silhouette-paths.json'); } catch (e) {}
 
+// ---- DIAGNOSTIC LOG: prints on cold start of every lambda instance --
+// Tells us what silhouette data Vercel actually bundled. If wheels are
+// missing from the sticker, this log confirms whether it's the JSON
+// content or something further downstream.
+try {
+  const keys = Object.keys(SILHOUETTE_PATHS);
+  console.log('[BOOT] SILHOUETTE_PATHS keys:', keys.length);
+  const sample = SILHOUETTE_PATHS['suv-family'];
+  if (sample) {
+    const subpaths = (sample.commands || []).filter(c => c[0] === 'M').length;
+    console.log('[BOOT] suv-family: subpaths=' + subpaths +
+                ' totalCmds=' + (sample.commands || []).length +
+                ' bounds=' + JSON.stringify(sample.bounds));
+  } else {
+    console.log('[BOOT] suv-family NOT FOUND in SILHOUETTE_PATHS');
+  }
+} catch (e) {
+  console.log('[BOOT] diagnostic log failed:', e && e.message);
+}
+
 const ARCHIVO_BLACK_URL =
   'https://fonts.gstatic.com/s/archivoblack/v23/HTxqL289NzCGg4MzN6KJ7eW6OYs.ttf';
 
