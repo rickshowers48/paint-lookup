@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="PaintMatchPen">
+  <title>PaintMatchPen — square logo</title>
+
+  <!-- Background -->
+  <rect width="1024" height="1024" fill="#0A0A0A"/>
+
+  <!-- PaintMatch wordmark (top) -->
+  <!-- "Paint" upright + "Match" italic, both in Archivo Black -->
+  <g font-family="Archivo Black, Impact, sans-serif" fill="#FFFFFF" text-anchor="middle" letter-spacing="-6">
+    <text x="512" y="440" font-size="220">Paint<tspan font-style="italic">Match</tspan></text>
+  </g>
+
+  <!-- Bottom lock-up: UK flag chip + yellow PEN block -->
+  <!-- Positioned as a unit, centred horizontally -->
+  <g transform="translate(212, 560)">
+    <!-- UK flag chip -->
+    <g>
+      <rect x="0" y="0" width="200" height="200" rx="18" fill="#003399"/>
+      <!-- Union Jack simplified -->
+      <clipPath id="ukClip">
+        <rect x="0" y="0" width="200" height="200" rx="18"/>
+      </clipPath>
+      <g clip-path="url(#ukClip)">
+        <path d="M0,0 L200,200 M200,0 L0,200" stroke="#FFFFFF" stroke-width="36"/>
+        <path d="M0,0 L200,200 M200,0 L0,200" stroke="#C8102E" stroke-width="18"/>
+        <path d="M100,0 V200 M0,100 H200" stroke="#FFFFFF" stroke-width="56"/>
+        <path d="M100,0 V200 M0,100 H200" stroke="#C8102E" stroke-width="32"/>
+      </g>
+      <text x="100" y="240" font-family="Archivo Black, Impact, sans-serif" font-size="42" fill="#FFCC00" text-anchor="middle" letter-spacing="4">UK</text>
+    </g>
+
+    <!-- Yellow PEN block -->
+    <g transform="translate(240, 0)">
+      <rect x="0" y="0" width="360" height="200" rx="18" fill="#FBD300"/>
+      <text x="180" y="152" font-family="Archivo Black, Impact, sans-serif" font-size="180" fill="#0A0A0A" text-anchor="middle" letter-spacing="4">PEN</text>
+    </g>
+  </g>
+</svg>

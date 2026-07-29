@@ -15,7 +15,7 @@
  *   Safe zone       Full canvas usable
  *   Format          EPS
  *   Text            Outlined (all glyphs as paths, no live fonts)
- *   Colour          CMYK 100% K
+ *   Colour          CMYK rich black (60/40/40/100) — punchy on clear vinyl
  *   File naming     REG-<VRM>.eps
  *   Delivery        Existing Dropbox folder
  *
@@ -324,7 +324,7 @@ function buildEps({ reg, paintName, paintCode, bodyType, fkFont }) {
     `%%HiResBoundingBox: 0 0 ${n(PAGE.width)} ${n(PAGE.height)}`,
     '%%Title: PaintMatchPen clear overlay',
     `%%Creator: paint-lookup /api/generate-label (${now})`,
-    '%%DocumentProcessColors: Black',
+    '%%DocumentProcessColors: Cyan Magenta Yellow Black',
     '%%LanguageLevel: 2',
     '%%EndComments',
     '',
@@ -336,11 +336,12 @@ function buildEps({ reg, paintName, paintCode, bodyType, fkFont }) {
     'gsave',
     '',
     '% ================================================================',
-    '% STEP 1 — Fill the full 95x18mm rectangle with 100% K black.',
-    '% Ari\'s spec: pure K only, no C/M/Y contamination — this ensures',
-    '% the RIP prints the black on the K plate only, no rich-black mix.',
+    '% STEP 1 — Fill the full 95x18mm rectangle with RICH BLACK.',
+    '% Ari\'s spec: CMYK rich-black (60/40/40/100) — deeper, punchier',
+    '% coverage than pure K on clear vinyl, avoids the "washed out"',
+    '% grey look you can get printing K-only on film substrates.',
     '% ================================================================',
-    '0 0 0 1 setcmykcolor',
+    '0.6 0.4 0.4 1 setcmykcolor',
     'newpath',
     `0 0 moveto`,
     `${n(PAGE.width)} 0 lineto`,
