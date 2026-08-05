@@ -583,8 +583,11 @@ const MODEL_TO_SILHOUETTE = {
   YARIS: "hatchback", AURIS: "hatchback", GOLF: "hatchback", FOCUS: "hatchback",
   ASTRA: "hatchback", LEON: "hatchback", MEGANE: "hatchback", PEUGEOT: "hatchback",
   CIVIC: "hatchback", PULSAR: "hatchback", "1 SERIES": "hatchback",
-  "A-CLASS": "hatchback", A1: "hatchback", A3: "hatchback", MINI: "hatchback",
-  COOPER: "hatchback",
+  "A-CLASS": "hatchback", A1: "hatchback", A3: "hatchback",
+  // Mini gets its own stubby-hatchback silhouette
+  MINI: "hatchback-mini", COOPER: "hatchback-mini", CLUBMAN: "hatchback-mini",
+  "COOPER S": "hatchback-mini", "COOPER SE": "hatchback-mini",
+  "ONE": "hatchback-mini",
   // ===== SUVs / crossovers / "soft-roaders" =====
   XC40: "suv", XC60: "suv", XC70: "suv", XC90: "suv",
   Q2: "suv", Q3: "suv", Q4: "suv", Q5: "suv", Q7: "suv", Q8: "suv",
@@ -651,41 +654,56 @@ function pickSilhouetteKey(bodyType, model) {
   for (const key of Object.keys(MODEL_TO_SILHOUETTE)) {
     if (md.includes(key)) return MODEL_TO_SILHOUETTE[key];
   }
+  // Extra token-based catches for models where DVLA/VDG returns weird
+  // strings that don't include the model name (e.g. Toyota Hilux comes
+  // back as "HI-LUXURY INVINCIBLE D-4D 4WD DOUBLE CAB AUTO" — no HILUX
+  // in the string, but "HI-LUX" is).
+  if (md.includes("HI-LUX") || md.includes("HI LUX")) return "pickup";
 
-  // --- Stage 2: body-type keyword matching (now much more thorough) -----
+  // --- Stage 2: keyword matching --------------------------------------
+  // Search across BOTH bodyType and model string. DVLA often leaves
+  // bodyType blank and puts the format in the model name (e.g. "DOUBLE
+  // CAB", "PANEL VAN", "ESTATE"), so we look at both fields together.
+  const s = (bt + " " + md).replace(/\s+/g, " ");
   // SUV / crossover
-  if (bt.includes("SUV") || bt.includes("CROSSOVER") || bt.includes("4X4") ||
-      bt.includes("OFF ROAD") || bt.includes("OFF-ROAD") ||
-      bt.includes("SPORT UTILITY")) return "suv";
+  if (s.includes("SUV") || s.includes("CROSSOVER") || s.includes("4X4") ||
+      s.includes("OFF ROAD") || s.includes("OFF-ROAD") ||
+      s.includes("SPORT UTILITY")) return "suv";
+  // Pickup (checked BEFORE city/hatch — "DOUBLE CAB" in a model string
+  // is the clearest pickup signal and shouldn't be misread as anything
+  // else)
+  if (s.includes("PICK") || s.includes("CREW CAB") ||
+      s.includes("DOUBLE CAB") || s.includes("EXTRA CAB") ||
+      s.includes("KING CAB") || s.includes("SINGLE CAB") ||
+      s.includes("CHASSIS CAB")) return "pickup";
+  // Van (before MPV to catch "PANEL VAN" cleanly)
+  if (s.includes("PANEL VAN") || s.includes("BOX VAN") ||
+      s.includes(" VAN") || s.startsWith("VAN") ||
+      s.includes("LUTON")) return "van";
   // City car (DVLA sometimes uses these wordings explicitly)
-  if (bt.includes("CITY") || bt.includes("MINI CAR") ||
-      bt.includes("SMALL CAR")) return "citycar";
+  if (s.includes("CITY CAR") || s.includes("MINI CAR") ||
+      s.includes("SMALL CAR")) return "citycar";
   // Hatchback variants — catch "5 DOOR HATCH", "3-DOOR HATCH", etc.
-  if (bt.includes("HATCH") || bt.includes("5 DOOR") || bt.includes("3 DOOR") ||
-      bt.includes("5-DOOR") || bt.includes("3-DOOR") ||
-      bt.includes("HATCHBACK")) return "hatchback";
+  if (s.includes("HATCH") || s.includes("5 DOOR") || s.includes("3 DOOR") ||
+      s.includes("5-DOOR") || s.includes("3-DOOR") ||
+      s.includes("HATCHBACK")) return "hatchback";
   // Saloon
-  if (bt.includes("SALOON") || bt.includes("SEDAN") ||
-      bt.includes("4 DOOR") || bt.includes("4-DOOR")) return "saloon";
+  if (s.includes("SALOON") || s.includes("SEDAN") ||
+      s.includes("4 DOOR") || s.includes("4-DOOR")) return "saloon";
   // Estate / wagon
-  if (bt.includes("ESTATE") || bt.includes("WAGON") || bt.includes("TOURER") ||
-      bt.includes("AVANT") || bt.includes("TOURING")) return "estate";
+  if (s.includes("ESTATE") || s.includes("WAGON") || s.includes("TOURER") ||
+      s.includes("AVANT") || s.includes("TOURING")) return "estate";
   // Coupe
-  if (bt.includes("COUPE") || bt.includes("COUPÉ") ||
-      bt.includes("FASTBACK")) return "coupe";
+  if (s.includes("COUPE") || s.includes("COUPÉ") ||
+      s.includes("FASTBACK")) return "coupe";
   // Convertible
-  if (bt.includes("CONVERTIBLE") || bt.includes("CABRIOLET") ||
-      bt.includes("CABRIO") || bt.includes("ROADSTER") ||
-      bt.includes("SPYDER") || bt.includes("SPIDER")) return "convertible";
+  if (s.includes("CONVERTIBLE") || s.includes("CABRIOLET") ||
+      s.includes("CABRIO") || s.includes("ROADSTER") ||
+      s.includes("SPYDER") || s.includes("SPIDER")) return "convertible";
   // MPV / people carrier
-  if (bt.includes("MPV") || bt.includes("MULTI") ||
-      bt.includes("PEOPLE CARRIER") || bt.includes("MINIVAN") ||
-      bt.includes("MINI VAN")) return "mpv";
-  // Pickup
-  if (bt.includes("PICK") || bt.includes("CREW CAB") ||
-      bt.includes("DOUBLE CAB") || bt.includes("EXTRA CAB")) return "pickup";
-  // Van (after MPV/pickup to avoid overlap)
-  if (bt.includes("VAN") || bt.includes("PANEL")) return "van";
+  if (s.includes("MPV") || s.includes("MULTI") ||
+      s.includes("PEOPLE CARRIER") || s.includes("MINIVAN") ||
+      s.includes("MINI VAN")) return "mpv";
 
   // --- Stage 3: fallback default -----------------------------------
   // "hatchback" is the most accurate default for UK roads — Polo/Fiesta/

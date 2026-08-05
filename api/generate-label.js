@@ -292,6 +292,67 @@ function layoutCenteredText(fkFont, text, layout) {
   return { x, fontSize, baselineY };
 }
 
+// Split a long paint name into two roughly balanced lines. Prefers
+// natural split points (" - ", " / ", " & "), falls back to the
+// nearest space to the string midpoint.
+//
+// Handles names like "MANUFAKTUR BRILLIANT BLUE - METALLIC FINISH"
+// where single-line shrink would drop below readable size.
+function splitPaintNameForTwoLines(text) {
+  const t = String(text || '').trim();
+  for (const sep of [/\s+-\s+/, /\s+\/\s+/, /\s+&\s+/]) {
+    const parts = t.split(sep);
+    if (parts.length >= 2) {
+      const mid = Math.ceil(parts.length / 2);
+      const left = parts.slice(0, mid).join(' ').trim();
+      const right = parts.slice(mid).join(' ').trim();
+      if (left && right) return [left, right];
+    }
+  }
+  const words = t.split(/\s+/);
+  if (words.length < 2) return [t, ''];
+  let bestSplit = 1;
+  let bestDelta = Infinity;
+  for (let i = 1; i < words.length; i++) {
+    const left = words.slice(0, i).join(' ').length;
+    const right = words.slice(i).join(' ').length;
+    const delta = Math.abs(left - right);
+    if (delta < bestDelta) { bestDelta = delta; bestSplit = i; }
+  }
+  return [
+    words.slice(0, bestSplit).join(' '),
+    words.slice(bestSplit).join(' '),
+  ];
+}
+
+// Build the paint-name PostScript. Uses single-line at natural size,
+// shrinks progressively, and falls back to a two-line layout when a
+// single line would need to shrink below 9pt.
+//
+// Two-line baselines are placed above/below the single-line 7mm
+// baseline so vertical hierarchy still reads reg → name → code.
+function buildPaintNamePS(fkFont, nameStr) {
+  const zoneW = TEXT_ZONE.xMax - TEXT_ZONE.xMin;
+  const maxW = zoneW - 2;
+  const singleFit = fitFontSize(fkFont, nameStr, TEXT_LAYOUT.paintName.fontSize, maxW);
+  const hasSpace = /\s/.test(nameStr);
+
+  if (singleFit >= 9 || !hasSpace) {
+    const fit = layoutCenteredText(fkFont, nameStr, TEXT_LAYOUT.paintName);
+    return emitGlyphPathPS(fkFont, nameStr, fit.fontSize, fit.x, fit.baselineY);
+  }
+
+  const [line1, line2] = splitPaintNameForTwoLines(nameStr);
+  const twoLineLayout1 = { baselineY: 9.0 * MM, fontSize: 10 };
+  const twoLineLayout2 = { baselineY: 5.2 * MM, fontSize: 10 };
+  const l1 = layoutCenteredText(fkFont, line1, twoLineLayout1);
+  const l2 = layoutCenteredText(fkFont, line2, twoLineLayout2);
+  return [
+    emitGlyphPathPS(fkFont, line1, l1.fontSize, l1.x, l1.baselineY),
+    emitGlyphPathPS(fkFont, line2, l2.fontSize, l2.x, l2.baselineY),
+  ].join('\n');
+}
+
 // ---- EPS generation -------------------------------------------------
 function buildEps({ reg, paintName, paintCode, bodyType, fkFont }) {
   const regStr = String(reg || '').toUpperCase().trim();
@@ -299,14 +360,12 @@ function buildEps({ reg, paintName, paintCode, bodyType, fkFont }) {
   const codeStr = String(paintCode || '').toUpperCase().trim();
 
   const regFit  = layoutCenteredText(fkFont, regStr,  TEXT_LAYOUT.reg);
-  const nameFit = layoutCenteredText(fkFont, nameStr, TEXT_LAYOUT.paintName);
   const codeFit = layoutCenteredText(fkFont, codeStr, TEXT_LAYOUT.paintCode);
 
   const silhouettePS = emitSilhouettePathPS(bodyType, SILHOUETTE_BOX);
   const regPS  = emitGlyphPathPS(fkFont, regStr,  regFit.fontSize,
                                  regFit.x,  regFit.baselineY);
-  const namePS = emitGlyphPathPS(fkFont, nameStr, nameFit.fontSize,
-                                 nameFit.x, nameFit.baselineY);
+  const namePS = buildPaintNamePS(fkFont, nameStr);
   const codePS = emitGlyphPathPS(fkFont, codeStr, codeFit.fontSize,
                                  codeFit.x, codeFit.baselineY);
 
@@ -504,6 +563,9 @@ function mapShortKeyToSilhouetteFile(key) {
     coupe:       'coupe-fastback',
     sportscar:   'sportscar-coupe',
     crossover:   'crossover-medium',
+    mini:        'hatchback-mini',
+    pickup:      'pickup',
+    van:         'van',
   };
   if (SHORT_TO_FILE[k]) return SHORT_TO_FILE[k];
   return k;
