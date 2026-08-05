@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PaintMatchPen — Launching Monday 24th August</title>
+  <meta name="description" content="PaintMatchPen — custom-mixed automotive touch-up pens for every UK car. Launching Monday 24th August." />
+  <meta property="og:title" content="PaintMatchPen — Launching Monday 24th August" />
+  <meta property="og:description" content="Custom-mixed automotive touch-up pens. YOUR CAR. YOUR COLOUR." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://paintmatchpen.com" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/logos/paintmatchpen-favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="64x64" href="/logos/paintmatchpen-favicon-64.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/logos/paintmatchpen-favicon-180.png" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background: #ffffff;
+      color: #111;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ============ TOP BRAND BANNER — LIFTED FROM LIVE SITE ============ */
+    .banner {
+      background: #000;
+      color: #fff;
+      padding: 14px 32px 18px;
+      text-align: center;
+    }
+    .banner-logo {
+      font-family: 'Archivo Black', sans-serif;
+      font-size: 88px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      letter-spacing: -1px;
+      color: #ffffff;
+    }
+    .banner-logo .match { font-style: italic; }
+    .banner-pen {
+      background: #ffffff;
+      color: #000;
+      display: inline-flex;
+      align-items: stretch;
+      border-radius: 10px;
+      border: 4px solid #000;
+      overflow: hidden;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+      position: relative;
+      font-family: 'Archivo Black', sans-serif;
+      line-height: 1;
+    }
+    .banner-pen::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg, rgba(255,255,255,0.22) 0%, transparent 35%, transparent 70%, rgba(0,0,0,0.08) 100%);
+      pointer-events: none;
+    }
+    .banner-pen .pen-tab {
+      background: #003399;
+      width: 56px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 14px 0;
+    }
+    .banner-pen .pen-tab .uk-flag-tiny {
+      width: 36px;
+      height: 22px;
+      border-radius: 2px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.15);
+    }
+    .banner-pen .pen-tab .uk-flag-tiny svg { display: block; width: 100%; height: 100%; }
+    .banner-pen .pen-tab .uk-letters {
+      font-family: 'Inter', sans-serif;
+      font-weight: 800;
+      font-size: 14px;
+      color: #FFCC00;
+      letter-spacing: 1px;
+    }
+    .banner-pen .pen-letters {
+      padding: 0 26px;
+      display: flex;
+      align-items: center;
+      font-size: inherit;
+      letter-spacing: -1px;
+    }
+    .banner-tagline {
+      margin-top: 18px;
+      font-size: 36px;
+      letter-spacing: 8px;
+      color: #888;
+      font-weight: 600;
+      font-family: 'Archivo Black', sans-serif;
+      text-transform: uppercase;
+    }
+    .banner-tagline .car-part { color: #ffffff; }
+    .banner-tagline .colour-part {
+      background: linear-gradient(105deg,
+        #FF6B6B 0%,
+        #FF9F45 15%,
+        #FFD93D 30%,
+        #6BCB77 45%,
+        #4D96FF 62%,
+        #9B5DE5 80%,
+        #F15BB5 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      color: transparent;
+      filter: saturate(1.15);
+    }
+
+    /* ============ HOLDING BODY (BELOW BANNER) ============ */
+    .holding {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 80px 24px 100px;
+      text-align: center;
+    }
+    .launch-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 18px;
+      border-radius: 999px;
+      background: #FFF9D6;
+      border: 1px solid #F0D700;
+      color: #7A6100;
+      font-family: 'Archivo Black', Impact, sans-serif;
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin-bottom: 24px;
+    }
+    .launch-chip .dot {
+      width: 8px;
+      height: 8px;
+      background: #F0B400;
+      border-radius: 50%;
+      box-shadow: 0 0 0 4px rgba(240, 180, 0, 0.18);
+      animation: pulse 1.8s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.55; transform: scale(0.82); }
+    }
+    .headline {
+      font-family: 'Archivo Black', Impact, sans-serif;
+      font-size: clamp(38px, 7vw, 72px);
+      line-height: 1.02;
+      letter-spacing: -0.02em;
+      margin-bottom: 14px;
+      color: #0A0A0A;
+    }
+    .headline .date {
+      display: block;
+      color: #003399;
+      margin-top: 8px;
+    }
+    .subhead {
+      font-size: clamp(15px, 2vw, 19px);
+      color: #555;
+      max-width: 48ch;
+      margin: 0 auto 56px;
+      line-height: 1.55;
+    }
+    .countdown {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      width: 100%;
+      max-width: 520px;
+      margin: 0 auto 64px;
+    }
+    .cd-cell {
+      background: #0A0A0A;
+      color: #fff;
+      border-radius: 14px;
+      padding: 22px 8px 16px;
+      text-align: center;
+    }
+    .cd-num {
+      font-family: 'Archivo Black', Impact, sans-serif;
+      font-size: clamp(30px, 7vw, 52px);
+      line-height: 1;
+      letter-spacing: -0.02em;
+    }
+    .cd-label {
+      font-family: 'Archivo Black', Impact, sans-serif;
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      color: #888;
+      text-transform: uppercase;
+      margin-top: 10px;
+    }
+    .contact {
+      color: #666;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .contact a {
+      color: #0A0A0A;
+      text-decoration: none;
+      border-bottom: 2px solid #FBD300;
+      font-weight: 600;
+    }
+    .contact a:hover { background: #FBD300; }
+    footer {
+      margin-top: 48px;
+      color: #999;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    /* ============ MOBILE — LIFTED FROM LIVE SITE ============ */
+    @media (max-width: 900px) {
+      .banner { padding: 12px 4px 14px; overflow: hidden; }
+      .banner-logo {
+        font-size: clamp(16px, 8.8vw, 72px);
+        gap: 3px;
+        max-width: 100%;
+        letter-spacing: -1px;
+      }
+      .banner-pen { border-width: 2px; border-radius: 4px; }
+      .banner-pen .pen-tab { width: 20px; gap: 2px; padding: 4px 0; }
+      .banner-pen .pen-tab .uk-flag-tiny { width: 14px; height: 8px; }
+      .banner-pen .pen-tab .uk-letters { font-size: 6px; letter-spacing: 0.2px; }
+      .banner-pen .pen-letters { padding: 0 6px; letter-spacing: -0.8px; }
+      .banner-tagline {
+        font-size: clamp(10px, 3.2vw, 16px);
+        letter-spacing: clamp(1px, 0.5vw, 2.5px);
+        margin-top: 8px;
+        white-space: nowrap;
+      }
+      .holding { padding: 48px 20px 70px; }
+      .cd-cell { padding: 16px 4px 12px; border-radius: 10px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ============ TOP BRAND BANNER — MATCHES LIVE SITE ============ -->
+<section class="banner">
+  <div class="banner-logo">
+    <span>Paint<span class="match">Match</span></span>
+    <span class="banner-pen">
+      <span class="pen-tab">
+        <span class="uk-flag-tiny">
+          <svg viewBox="0 0 60 30" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+            <rect width="60" height="30" fill="#012169"/>
+            <path d="M0,0 L60,30 M60,0 L0,30" stroke="#fff" stroke-width="6"/>
+            <path d="M0,0 L60,30 M60,0 L0,30" stroke="#C8102E" stroke-width="3"/>
+            <path d="M30,0 V30 M0,15 H60" stroke="#fff" stroke-width="10"/>
+            <path d="M30,0 V30 M0,15 H60" stroke="#C8102E" stroke-width="6"/>
+          </svg>
+        </span>
+        <span class="uk-letters">UK</span>
+      </span>
+      <span class="pen-letters">PEN</span>
+    </span>
+  </div>
+  <div class="banner-tagline"><span class="car-part">YOUR CAR.</span> <span class="colour-part">YOUR COLOUR.</span></div>
+</section>
+
+<!-- ============ HOLDING BODY ============ -->
+<main class="holding">
+
+  <h1 class="headline">
+    Going Live<span class="date">Monday 24th August</span>
+  </h1>
+
+  <p class="subhead">
+    Custom-mixed automotive touch-up pens, matched to your factory paint code.
+    Mixed in the UK. Dispatched within 24 hours.
+  </p>
+
+  <div class="countdown" aria-label="Countdown to launch">
+    <div class="cd-cell"><div class="cd-num" id="cd-days">--</div><div class="cd-label">Days</div></div>
+    <div class="cd-cell"><div class="cd-num" id="cd-hours">--</div><div class="cd-label">Hours</div></div>
+    <div class="cd-cell"><div class="cd-num" id="cd-mins">--</div><div class="cd-label">Mins</div></div>
+    <div class="cd-cell"><div class="cd-num" id="cd-secs">--</div><div class="cd-label">Secs</div></div>
+  </div>
+
+  <footer>&copy; PaintMatchPen &middot; Mixed and posted from Staffordshire, UK</footer>
+</main>
+
+<script>
+  // Launch: Monday 24 August 2026, 09:00 UK (BST = UTC+1)
+  var LAUNCH = new Date('2026-08-24T09:00:00+01:00').getTime();
+  var elDays  = document.getElementById('cd-days');
+  var elHours = document.getElementById('cd-hours');
+  var elMins  = document.getElementById('cd-mins');
+  var elSecs  = document.getElementById('cd-secs');
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+  function tick() {
+    var diff = LAUNCH - Date.now();
+    if (diff <= 0) {
+      elDays.textContent = '00'; elHours.textContent = '00';
+      elMins.textContent = '00'; elSecs.textContent = '00';
+      return;
+    }
+    var s = Math.floor(diff / 1000);
+    elDays.textContent  = pad(Math.floor(s / 86400));
+    elHours.textContent = pad(Math.floor((s % 86400) / 3600));
+    elMins.textContent  = pad(Math.floor((s % 3600) / 60));
+    elSecs.textContent  = pad(s % 60);
+  }
+  tick();
+  setInterval(tick, 1000);
+</script>
+</body>
+</html>
