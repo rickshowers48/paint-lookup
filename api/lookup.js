@@ -864,7 +864,16 @@ module.exports = async (req, res) => {
     // ---------- 3. CACHE ----------
     const cached = await getCached(reg);
     if (cached) {
-      return res.status(200).json({ ...cached, fromCache: true });
+      // Recompute silhouetteKey on every cache read. This lets us tweak
+      // the silhouette picker (add makes, reroute Mini → hatchback-mini,
+      // etc.) without a cache bump — old cached entries still hold the
+      // raw bodyType + model, so the new picker just re-runs against
+      // them. Saves a cache-wide VDG re-fetch every time we touch the
+      // resolver.
+      const silhouetteKey = cached.vehicle
+        ? pickSilhouetteKey(cached.vehicle.bodyType, cached.vehicle.model)
+        : cached.silhouetteKey;
+      return res.status(200).json({ ...cached, silhouetteKey, fromCache: true });
     }
 
     console.log(`LIVE lookup: ${reg}`);
