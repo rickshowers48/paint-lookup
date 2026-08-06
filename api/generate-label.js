@@ -227,6 +227,16 @@ function emitGlyphPathPS(fkFont, text, fontSize, baselineX, baselineY) {
 // y-up. We flip y explicitly during the coordinate transform.
 function emitSilhouettePathPS(bodyType, box) {
   const sil = SILHOUETTE_PATHS[bodyType] || SILHOUETTE_PATHS['suv-family'];
+  // Loud warning if the requested silhouette wasn't in the bundle.
+  // Cause: silhouette-paths.json in the deploy is out of date. Fix by
+  // pushing the latest JSON — the SUV fallback is why "wrong car shape"
+  // bugs happen after we add a new silhouette key.
+  if (!SILHOUETTE_PATHS[bodyType]) {
+    console.warn('[emit] FALLBACK — bodyType "' + bodyType +
+                 '" not in bundled silhouette-paths.json (has ' +
+                 Object.keys(SILHOUETTE_PATHS).length + ' keys). ' +
+                 'Using suv-family. Push api/silhouette-paths.json to fix.');
+  }
   if (!sil || !sil.bounds || !sil.commands) return '';
 
   const [bxMin, byMin, bxMax, byMax] = sil.bounds;
