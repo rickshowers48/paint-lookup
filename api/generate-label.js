@@ -53,14 +53,17 @@ try { SILHOUETTE_PATHS = require('./silhouette-paths.json'); } catch (e) {}
 try {
   const keys = Object.keys(SILHOUETTE_PATHS);
   console.log('[BOOT] SILHOUETTE_PATHS keys:', keys.length);
-  const sample = SILHOUETTE_PATHS['suv-family'];
-  if (sample) {
-    const subpaths = (sample.commands || []).filter(c => c[0] === 'M').length;
-    console.log('[BOOT] suv-family: subpaths=' + subpaths +
-                ' totalCmds=' + (sample.commands || []).length +
-                ' bounds=' + JSON.stringify(sample.bounds));
-  } else {
-    console.log('[BOOT] suv-family NOT FOUND in SILHOUETTE_PATHS');
+  // Check every key we care about — quickly tells us if a specific
+  // silhouette is missing from the bundled JSON on a Vercel cold start.
+  for (const k of ['suv-family', 'hatchback-small', 'pickup', 'mini']) {
+    const s = SILHOUETTE_PATHS[k];
+    if (s) {
+      const subpaths = (s.commands || []).filter(c => c[0] === 'M').length;
+      console.log('[BOOT] ' + k + ': subpaths=' + subpaths +
+                  ' totalCmds=' + (s.commands || []).length);
+    } else {
+      console.log('[BOOT] ' + k + ' NOT FOUND in SILHOUETTE_PATHS');
+    }
   }
 } catch (e) {
   console.log('[BOOT] diagnostic log failed:', e && e.message);
