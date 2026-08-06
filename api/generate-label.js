@@ -546,7 +546,7 @@ function mapShortKeyToSilhouetteFile(key) {
   if (!key) return null;
   const k = String(key).toLowerCase().trim();
   const EXACT = new Set([
-    'citycar', 'convertible', 'estate', 'mpv', 'pickup', 'saloon', 'van',
+    'citycar', 'convertible', 'estate', 'mini', 'mpv', 'pickup', 'saloon', 'van',
     'coupe-fastback','coupe-hatch','coupe-long','coupe-sleek','coupe-sloped','coupe-sport',
     'crossover-medium','crossover-small',
     'hatchback-3door','hatchback-boxy','hatchback-compact','hatchback-hot','hatchback-low',
@@ -563,7 +563,7 @@ function mapShortKeyToSilhouetteFile(key) {
     coupe:       'coupe-fastback',
     sportscar:   'sportscar-coupe',
     crossover:   'crossover-medium',
-    mini:        'hatchback-mini',
+    mini:        'mini',
     pickup:      'pickup',
     van:         'van',
   };

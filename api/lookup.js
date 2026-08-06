@@ -584,10 +584,11 @@ const MODEL_TO_SILHOUETTE = {
   ASTRA: "hatchback", LEON: "hatchback", MEGANE: "hatchback", PEUGEOT: "hatchback",
   CIVIC: "hatchback", PULSAR: "hatchback", "1 SERIES": "hatchback",
   "A-CLASS": "hatchback", A1: "hatchback", A3: "hatchback",
-  // Mini gets its own stubby-hatchback silhouette
-  MINI: "hatchback-mini", COOPER: "hatchback-mini", CLUBMAN: "hatchback-mini",
-  "COOPER S": "hatchback-mini", "COOPER SE": "hatchback-mini",
-  "ONE": "hatchback-mini",
+  // Mini — bespoke silhouette (public/silhouettes/mini.png), traced from
+  // Rick's line-art reference. Stubby body, tall greenhouse, big round
+  // wheel arches — actually looks like a Mini.
+  MINI: "mini", COOPER: "mini", CLUBMAN: "mini",
+  "COOPER S": "mini", "COOPER SE": "mini", "ONE": "mini",
   // ===== SUVs / crossovers / "soft-roaders" =====
   XC40: "suv", XC60: "suv", XC70: "suv", XC90: "suv",
   Q2: "suv", Q3: "suv", Q4: "suv", Q5: "suv", Q7: "suv", Q8: "suv",
