@@ -39,6 +39,7 @@
 const { Redis } = require("@upstash/redis");
 const formulaModule = require("./formula");
 const getFormula = formulaModule.getFormula;
+const getCandidates = formulaModule.getCandidates;
 
 // ============================================================
 // CONFIG
@@ -343,10 +344,24 @@ async function lookupVDG(reg) {
       `VDG paint detail for ${reg}: ${JSON.stringify(firstPaint)}`
     );
 
+    // [2 Oct 2026] Keep EVERY paint VDG offers, not just the first.
+    // Some cars come back with 2-3 candidate codes and the one in our
+    // sheet / Mipa isn't always first in the list.
+    const paintCodes = paintList
+      .map((pc) => ({
+        code: String(pc.Code || "").trim(),
+        name: String(pc.Description || "").trim(),
+      }))
+      .filter((pc) => pc.code || pc.name);
+    if (paintList.length > 1) {
+      console.log(`VDG returned ${paintList.length} paints for ${reg}: ${JSON.stringify(paintCodes)}`);
+    }
+
     return {
       make: details.Make || null,
       model: details.Model || null,
       colour: details.CurrentColour || null,
+      paintCodes,
       fuelType: details.FuelType || null,
       bodyType: details.BodyType || null,
       paintCode: firstPaint.Code || null,
@@ -781,6 +796,75 @@ async function setCached(reg, data, isNegative) {
 }
 
 // ============================================================
+// HIT-RATE LOG (2 Oct 2026)
+// ============================================================
+// Every LIVE lookup (not cache hits — so each reg counts once) bumps a
+// counter, and every miss is pushed onto a capped Redis list. View it at
+// /api/misses?key=YOUR_MISSES_KEY. Reasons:
+//   hit_recipe        — VDG code + we have the recipe          (perfect)
+//   hit_name_only     — VDG code, in sheet, no recipe yet       (customer fine)
+//   code_not_in_sheet — VDG gave a code our sheet doesn't know  (add alias!)
+//   vdg_no_code       — vehicle found, VDG had no paint code    (customer miss)
+//   vehicle_not_found — neither DVLA nor VDG knew the reg
+// Never throws — logging must not break a lookup.
+
+const STATS_PREFIX = "pmp:stats:";
+const MISS_LIST_KEY = "pmp:misses";
+const MISS_LIST_MAX = 2000;
+
+async function logOutcome(reason, info) {
+  if (!redisReady()) return;
+  try {
+    const p = redis.pipeline();
+    p.incr(STATS_PREFIX + "live");
+    p.incr(STATS_PREFIX + reason);
+    if (reason !== "hit_recipe" && reason !== "hit_name_only") {
+      p.lpush(MISS_LIST_KEY, JSON.stringify({ ts: new Date().toISOString(), reason, ...info }));
+      p.ltrim(MISS_LIST_KEY, 0, MISS_LIST_MAX - 1);
+    }
+    await p.exec();
+  } catch (err) {
+    console.warn("logOutcome failed:", err.message);
+  }
+}
+
+// Re-run formula matching (or the shortlist) against the CURRENT sheet.
+// Used on cache hits too, so adding an alias in the sheet fixes cars
+// that were looked up before the alias existed — no cache bump, no
+// extra VDG spend. The sheet itself is cached, so this is cheap.
+async function refreshPaintData(data) {
+  try {
+    if (data.status === "found") {
+      const codes = (data.paintCodes && data.paintCodes.length)
+        ? data.paintCodes
+        : [data.paintCode].filter(Boolean);
+      const f = await getFormula({ paintCodes: codes, brand: data.vehicle?.make });
+      if (!f || !f.ok) return data;
+      return {
+        ...data,
+        paintCode: f.paintCode || data.paintCode,
+        paintName: data.vdgPaintName || data.paintName || f.paintName || null,
+        paintHex: data.vdgPaintHex || f.hex || data.paintHex || null,
+        formula: f.formula || [],
+        formulaStatus: f.status || data.formulaStatus,
+        sheetCode: f.sheetCode || "",
+      };
+    }
+    if (data.status === "paint_not_found") {
+      const candidates = await getCandidates({
+        make: data.vehicle?.make,
+        colour: data.vehicle?.colour,
+        hintName: (data.vdgPaintNames || []).join(" "),
+      });
+      return { ...data, candidates };
+    }
+  } catch (err) {
+    console.warn("refreshPaintData failed (serving cached as-is):", err.message);
+  }
+  return data;
+}
+
+// ============================================================
 // MAIN HANDLER
 // ============================================================
 
@@ -874,7 +958,8 @@ module.exports = async (req, res) => {
       const silhouetteKey = cached.vehicle
         ? pickSilhouetteKey(cached.vehicle.bodyType, cached.vehicle.model)
         : cached.silhouetteKey;
-      return res.status(200).json({ ...cached, silhouetteKey, fromCache: true });
+      const refreshed = await refreshPaintData(cached);
+      return res.status(200).json({ ...refreshed, silhouetteKey, fromCache: true });
     }
 
     console.log(`LIVE lookup: ${reg}`);
@@ -887,6 +972,7 @@ module.exports = async (req, res) => {
     const imageCandidates = null;
 
     if (!dvla && !vdg) {
+      await logOutcome("vehicle_not_found", { vrm: reg });
       return res.status(200).json({
         ok: false,
         status: "vehicle_not_found",
@@ -903,7 +989,9 @@ module.exports = async (req, res) => {
     const year = dvla?.year || null;
     const fuelType = vdg?.fuelType || dvla?.fuelType || null;
     const bodyType = vdg?.bodyType || dvla?.bodyType || null;
-    const paintCode = vdg?.paintCode || null;
+    const vdgPaints = vdg?.paintCodes || [];
+    const allCodes = [...new Set(vdgPaints.map((p) => p.code).filter(Boolean))];
+    const paintCode = allCodes[0] || vdg?.paintCode || null;
     const paintName = vdg?.paintName || null;
     const paintHex = vdg?.paintHex || null;
 
@@ -925,31 +1013,48 @@ module.exports = async (req, res) => {
         });
       }
 
+      // VDG sometimes knows the colour NAME but not the code — keep it,
+      // it's a strong hint for the shortlist and for Rick's manual check.
+      const vdgPaintNames = vdgPaints.map((p) => p.name).filter(Boolean);
       const noPaint = {
         ok: false,
         status: "paint_not_found",
         message:
-          "We found your vehicle but couldn't auto-match the paint code. You can enter your paint code manually.",
+          "We found your vehicle but couldn't auto-match the paint code.",
         vrm: reg,
         vehicle: { make, model, colour, year, fuelType, bodyType },
         silhouetteKey: pickSilhouetteKey(bodyType, model),
         imageUrl: imageUrl || null,
+        vdgPaintNames,
         fromCache: false,
       };
+      // Cache WITHOUT candidates — they're rebuilt from the live sheet
+      // on every read (see refreshPaintData), so new sheet rows show up.
       await setCached(reg, noPaint, true);
-      return res.status(200).json(noPaint);
+      const withCandidates = await refreshPaintData(noPaint);
+      await logOutcome("vdg_no_code", {
+        vrm: reg, make, model, year, colour,
+        vdgNames: vdgPaintNames,
+        shortlist: (withCandidates.candidates || []).length,
+      });
+      return res.status(200).json(withCandidates);
     }
 
     // ---------- 7. FORMULA ----------
     let formulaResult = { formula: [], status: "unknown", batchSizeMl: 10, paintName: "", hex: "" };
     try {
-      formulaResult = await getFormula({ paintCode, brand: make });
+      formulaResult = await getFormula({ paintCodes: allCodes.length ? allCodes : [paintCode], brand: make });
     } catch (err) {
       console.error("Formula lookup threw unexpectedly:", err);
     }
 
+    // If a LATER VDG code was the one our sheet knows, show that code and
+    // its VDG name rather than the first one.
+    const matchedCode = formulaResult.paintCode || paintCode;
+    const matchedVdg = vdgPaints.find((p) => p.code && p.code.toUpperCase() === String(matchedCode).toUpperCase());
+    const vdgName = (matchedVdg && matchedVdg.name) || paintName;
     const finalHex = paintHex || formulaResult.hex || null;
-    const finalPaintName = paintName || formulaResult.paintName || null;
+    const finalPaintName = vdgName || formulaResult.paintName || null;
 
     // ---------- 8. RESPONSE ----------
     const responseData = {
@@ -959,9 +1064,13 @@ module.exports = async (req, res) => {
       vehicle: { make, model, colour, year, fuelType, bodyType },
       silhouetteKey: pickSilhouetteKey(bodyType, model),
       imageUrl: imageUrl || null,
-      paintCode,
+      paintCode: matchedCode,
+      paintCodes: allCodes,                 // every code VDG offered
+      sheetCode: formulaResult.sheetCode || "", // what it's filed under in the sheet
       paintName: finalPaintName,
       paintHex: finalHex,
+      vdgPaintName: vdgName || null,        // kept so cache refreshes don't lose it
+      vdgPaintHex: paintHex || null,
       formula: formulaResult.formula || [],
       formulaStatus: formulaResult.status || "unknown",
       batchSizeMl: formulaResult.batchSizeMl || 10,
@@ -969,6 +1078,12 @@ module.exports = async (req, res) => {
     };
 
     await setCached(reg, responseData, false);
+
+    const fs = formulaResult.status;
+    await logOutcome(
+      fs === "found" ? "hit_recipe" : fs === "name_only" ? "hit_name_only" : "code_not_in_sheet",
+      { vrm: reg, make, model, year, colour, codes: allCodes, vdgName: vdgName || "" }
+    );
 
     return res.status(200).json(responseData);
   } catch (err) {
