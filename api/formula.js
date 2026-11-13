@@ -632,7 +632,7 @@ function significantWords(s) {
   return String(s || "").toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 3 && !noise.has(w));
 }
 
-async function getCandidates({ brand, make, colour, hintName, limit = 6 }) {
+async function getCandidates({ brand, make, colour, hintName, limit = 20 }) {
   const wantBrand = canonicalBrand(brand || make);
   const wantColour = String(colour || "").trim().toUpperCase().replace(/[^A-Z]/g, "");
   if (!wantBrand) return [];
@@ -658,12 +658,22 @@ async function getCandidates({ brand, make, colour, hintName, limit = 6 }) {
     if (hintWords.size && significantWords(p.paintName).some((w) => hintWords.has(w))) score += 5;
     if (score === 0) continue; // wrong colour family / no signal at all
     if (p.components.length) score += 1;    // we can mix it today
+    if (p.hex) score += 0.5;                // has a real swatch colour
 
     scored.push({ score, code: p.code, name: p.paintName, hex: p.hex || "", hasRecipe: p.components.length > 0 });
   }
 
   scored.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-  return scored.slice(0, limit).map(({ score, ...rest }) => rest);
+  // Same colour filed under several codes (e.g. MG Battersea Blue = JSA and
+  // JSO) — show it once. The best-scoring entry wins (recipe/hex first).
+  const seen = new Set();
+  const unique = scored.filter((c) => {
+    const k = c.name.trim().toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  return unique.slice(0, limit).map(({ score, ...rest }) => rest);
 }
 
 // ============================================================
