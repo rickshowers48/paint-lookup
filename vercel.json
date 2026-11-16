@@ -3,6 +3,10 @@
     "api/generate-label.js": {
       "includeFiles": "api/{canva-template.pdf,silhouette-paths.json}",
       "maxDuration": 30
+    },
+    "api/label-admin.js": {
+      "includeFiles": "api/{canva-template.pdf,silhouette-paths.json}",
+      "maxDuration": 30
     }
   }
 }

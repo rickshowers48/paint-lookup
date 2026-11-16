@@ -37,6 +37,7 @@
  */
 
 const fontkit = require('@pdf-lib/fontkit');
+const dropbox = require('./_dropbox');
 const fs = require('fs');
 const path = require('path');
 
@@ -459,30 +460,45 @@ function buildEps({ reg, paintName, paintCode, bodyType, fkFont }) {
 }
 
 // ---- Dropbox upload -------------------------------------------------
+// Now goes through ./_dropbox.js, which uses a never-expiring refresh
+// token (16 Nov 2026). Falls back to the old DROPBOX_TOKEN if the
+// refresh token isn't set up yet.
 async function uploadToDropbox(buf, dropboxPath) {
-  const token = process.env.DROPBOX_TOKEN;
-  if (!token) throw new Error('DROPBOX_TOKEN not configured');
+  return dropbox.uploadFile(buf, dropboxPath);
+}
 
-  const res = await fetch('https://content.dropboxapi.com/2/files/upload', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/octet-stream',
-      'Dropbox-API-Arg': JSON.stringify({
-        path: dropboxPath,
-        mode: 'overwrite',
-        autorename: false,
-        mute: true,
-      }),
-    },
-    body: buf,
-  });
+// ---- TBC orders (16 Nov 2026) ------------------------------------------
+// An order whose paint code is "TBC" (the "Order now, we'll match it"
+// route) must never produce a printable label. Its label goes to a
+// separate folder Ari doesn't print from, and the order is remembered in
+// Redis so /api/label-admin can list it and make the real label once the
+// code is known.
+const TBC_FOLDER = '/PaintMatchPen/Code-TBC';
+const PENDING_KEY = 'pmp:labels:pending';
 
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Dropbox upload failed ${res.status}: ${txt}`);
+function isTbc(code) {
+  const c = String(code || '').trim().toUpperCase();
+  return !c || c === 'TBC' || c === 'UNKNOWN' || c === 'MANUAL';
+}
+
+function labelPaths({ reg, orderId, tbc }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const safeReg = String(reg).replace(/\s+/g, '').toUpperCase();
+  const suffix = orderId ? `-${String(orderId).replace(/[^a-z0-9-]/gi, '')}` : '';
+  return tbc
+    ? `${TBC_FOLDER}/CHECK-REG-${safeReg}${suffix}.eps`
+    : `/PaintMatchPen/Orders/${today}/REG-${safeReg}${suffix}.eps`;
+}
+
+async function rememberPending(rec) {
+  const r = dropbox.getRedis();
+  if (!r) return;
+  const id = `${rec.reg}${rec.orderId ? '-' + rec.orderId : ''}`;
+  try {
+    await r.hset(PENDING_KEY, { [id]: JSON.stringify({ ...rec, id, created: new Date().toISOString() }) });
+  } catch (e) {
+    console.warn('[generate-label] could not record pending TBC order:', e.message);
   }
-  return res.json();
 }
 
 // ---- payload normalisation ------------------------------------------
@@ -634,7 +650,7 @@ module.exports = async function handler(req, res) {
     } catch (e) { /* swallow */ }
 
     let inputs = null;
-    if (body.reg && body.paintName && body.paintCode) {
+    if (body.reg && (body.paintName || body.paintCode)) {
       inputs = {
         reg: body.reg,
         paintName: body.paintName,
@@ -646,6 +662,9 @@ module.exports = async function handler(req, res) {
       inputs = extractFromWixPayload(body);
     }
 
+    // A TBC order may arrive with an empty code — that's allowed now.
+    if (inputs && inputs.reg && !inputs.paintCode) inputs.paintCode = 'TBC';
+    if (inputs && inputs.reg && !inputs.paintName) inputs.paintName = 'Colour to confirm';
     if (!inputs || !inputs.reg || !inputs.paintName || !inputs.paintCode) {
       return res.status(400).json({
         error: 'missing_fields',
@@ -674,15 +693,25 @@ module.exports = async function handler(req, res) {
     const { reg, paintName, paintCode, bodyType, orderId } = inputs;
     const epsBuf = await generateLabelEps({ reg, paintName, paintCode, bodyType });
 
-    const today = new Date().toISOString().slice(0, 10);
-    const safeReg = String(reg).replace(/\s+/g, '').toUpperCase();
-    const suffix = orderId ? `-${String(orderId).replace(/[^a-z0-9-]/gi, '')}` : '';
-    const dropboxPath = `/PaintMatchPen/Orders/${today}/REG-${safeReg}${suffix}.eps`;
+    const tbc = isTbc(paintCode);
+    const dropboxPath = labelPaths({ reg, orderId, tbc });
 
     await uploadToDropbox(epsBuf, dropboxPath);
 
+    if (tbc) {
+      await rememberPending({
+        reg: String(reg).replace(/\s+/g, '').toUpperCase(),
+        orderId: orderId ? String(orderId) : '',
+        vehicle: inputs.vehicle || '',
+        colour: paintName || '',
+        bodyType,
+        checkPath: dropboxPath,
+      });
+    }
+
     return res.status(200).json({
       ok: true,
+      tbc,
       dropboxPath,
       resolved: { reg, paintName, paintCode, bodyType, orderId },
     });
@@ -693,3 +722,4 @@ module.exports = async function handler(req, res) {
 };
 
 module.exports.generateLabelEps = generateLabelEps;
+module.exports._internals = { labelPaths, isTbc, PENDING_KEY, mapShortKeyToSilhouetteFile, lookupBodyTypeByReg };
